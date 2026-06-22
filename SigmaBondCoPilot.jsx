@@ -2134,22 +2134,27 @@ const SESSION_GUIDE = {
    you can confirm desktop and mobile are rendering the SAME artifact
    version (there's no separate "deployment" — both devices must have this
    exact code open for storage sync / auto-tape / etc. to match). */
-const BUILD_VERSION = "v2026-06-20i";
+const BUILD_VERSION = "v2026-06-20j";
 
-/* ── API routing ────────────────────────────────────────────────────────────
-   In production (Netlify), all Claude API calls are proxied through the
-   serverless function at /api/claude so the API key stays server-side and
-   CORS is never an issue. In local dev (localhost), Vite's dev server doesn't
-   run Netlify functions, so we fall back to direct Anthropic calls which work
-   in the Claude artifact sandbox (that sandbox whitelists api.anthropic.com).
-   To run locally with the proxy, use `netlify dev` instead of `npm run dev`.
-   ─────────────────────────────────────────────────────────────────────────── */
-const IS_NETLIFY = typeof window !== "undefined" &&
-  !window.location.hostname.includes("localhost") &&
-  !window.location.hostname.includes("127.0.0.1");
-const CLAUDE_API_URL = IS_NETLIFY
-  ? "/api/claude"
-  : "https://api.anthropic.com/v1/messages";
+/* ── Safe storage wrapper ────────────────────────────────────────────────────
+   window.storage is a claude.ai artifact-only API. On any real deployed
+   browser (Netlify, etc.) it is undefined — any direct call to
+   window.storage.get/set/delete throws TypeError and crashes the whole app.
+   This wrapper replaces every call site: get() always resolves null (no data),
+   set/delete silently succeed. localStorage remains the sole persistence layer
+   in production, which is the correct fallback since window.storage was always
+   a "bonus cross-device sync" layer, not the primary store. */
+const WS = {
+  get: (...args) => window.storage
+    ? WS.get(...args)
+    : Promise.resolve(null),
+  set: (...args) => window.storage
+    ? WS.set(...args)
+    : Promise.resolve(null),
+  delete: (...args) => window.storage
+    ? WS.delete(...args)
+    : Promise.resolve(null),
+};
 
 /* Embedded assets — base64-encoded so the artifact is fully self-contained
    with no external image dependencies. */
@@ -2525,7 +2530,7 @@ export default function SigmaBondCoPilot() {
     } catch (_) {}
     (async () => {
       try {
-        const res = await window.storage.get("sbcp-last-tape", false);
+        const res = await WS.get("sbcp-last-tape", false);
         const saved = res?.value ? JSON.parse(res.value) : null;
         if (saved?.text) {
           setTapeOutput({ session: saved.session, text: saved.text, loading: false, restoredAt: saved.ts });
@@ -2613,7 +2618,7 @@ export default function SigmaBondCoPilot() {
   async function syncFromStorage(force = false, compareAt = undefined) {
     setSyncing(true);
     try {
-      const res = await window.storage.get("sbcp-datasets", false);
+      const res = await WS.get("sbcp-datasets", false);
       const saved = res?.value ? JSON.parse(res.value) : null;
       const hasRealData = !!(saved && (
         saved.macro?.length || saved.sector?.length ||
@@ -2636,7 +2641,7 @@ export default function SigmaBondCoPilot() {
       setSyncStatus({ ts: Date.now(), found: hasRealData, adopted, error: null });
       return hasRealData;
     } catch (err) {
-      /* window.storage.get() throws for a key that doesn't exist yet
+      /* WS.get() throws for a key that doesn't exist yet
          (documented behavior) — harmless, just means no cross-device
          snapshot is available yet. localStorage already has this
          device's own data regardless, so this is a quiet no-op. */
@@ -2785,7 +2790,7 @@ export default function SigmaBondCoPilot() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get("sbcp-history", false);
+        const res = await WS.get("sbcp-history", false);
         if (res?.value) { const h = JSON.parse(res.value); if (Array.isArray(h)) setHistory(h); }
       } catch (_) {}
     })();
@@ -2800,7 +2805,7 @@ export default function SigmaBondCoPilot() {
     setHistory((h) => {
       if (h.length && h[h.length - 1].ts === ts) return h; // this snapshot already recorded
       const next = [...h, { ts, leaders }].slice(-5);
-      window.storage.set("sbcp-history", JSON.stringify(next), false).catch(() => {});
+      WS.set("sbcp-history", JSON.stringify(next), false).catch(() => {});
       return next;
     });
   }, [datasets._savedAt, gMacro, gSector, gStocks, gScans]);
@@ -2937,7 +2942,7 @@ export default function SigmaBondCoPilot() {
       try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
       // Cross-device persistence — async, never blocks the UI; localStorage
       // (set above) is already the durable per-device copy regardless.
-      window.storage.set("sbcp-datasets", JSON.stringify(next), false)
+      WS.set("sbcp-datasets", JSON.stringify(next), false)
         .then(() => setSaveStatus({ ok: true, ts: Date.now() }))
         .catch((err) => setSaveStatus({ ok: false, msg: err.message, ts: Date.now() }));
       return next;
@@ -3007,7 +3012,7 @@ export default function SigmaBondCoPilot() {
         setActiveTier(tier);
         setStoredAt(savedAt);
         try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
-        window.storage.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
+        WS.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
         const c = payload._counts || {};
         setSaveStatus({ ok: true, ts: Date.now(),
           msg: `Desk imported: ${c.macro||next.macro.length}M / ${c.sector||next.sector.length}S / ${c.stocks||next.stocks.length}E / ${c.scans||next.scans.length}X` });
@@ -3100,16 +3105,15 @@ export default function SigmaBondCoPilot() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(CLAUDE_API_URL, {
+        const r = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1,
+          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1,
             messages: [{ role: "user", content: "ping" }] }),
           signal: AbortSignal.timeout(4000),
         });
-        // Through the Netlify proxy — any non-network-error response means
-        // the proxy is reachable and the API key is likely configured.
-        // A 500 from the proxy means the key isn't set; a 200/400 means it is.
+        // A 401/400 means the endpoint is reachable (CORS passed). A CORS
+        // error throws and we catch below.
         const ok = r.status !== 0;
         setApiAvailable(ok);
       } catch (_) {
@@ -3149,7 +3153,7 @@ export default function SigmaBondCoPilot() {
       const body = { model: "claude-sonnet-4-6", max_tokens: maxTokens,
         messages: [{ role: "user", content: userContent }], stream: true };
       if (system) body.system = system;
-      const res = await fetch(CLAUDE_API_URL, {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers, body: JSON.stringify(body),
       });
       if (!res.ok || !res.body) {
@@ -3203,14 +3207,14 @@ export default function SigmaBondCoPilot() {
       if (tools) body.tools = tools;
       if (wantStream) body.stream = true;
 
-      const res = await fetch(CLAUDE_API_URL, {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers, body: JSON.stringify(body),
       });
 
       if (wantStream) {
         if (!res.ok || !res.body) {
           // Streamed attempt failed — fall back to a normal non-streaming call for this turn
-          const data2 = await fetch(CLAUDE_API_URL, {
+          const data2 = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST", headers, body: JSON.stringify({ ...body, stream: false }),
           }).then((r) => r.json());
           lastData = data2;
@@ -3329,7 +3333,7 @@ export default function SigmaBondCoPilot() {
        one rather than a cold restart. */
     let prevCarry = null;
     try {
-      const res = await window.storage.get("sbcp-prev-carry", false);
+      const res = await WS.get("sbcp-prev-carry", false);
       const saved = res?.value ? JSON.parse(res.value) : null;
       if (saved?.carry && saved?.ts && (Date.now() - new Date(saved.ts).getTime() < 36 * 3600 * 1000)) {
         prevCarry = saved;
@@ -3489,7 +3493,7 @@ ${template}`;
     if (text) {
       const snap = JSON.stringify({ session: sessionLabels[session], text: note + text, ts: new Date().toISOString() });
       try { localStorage.setItem("sbcp-last-tape", snap); } catch (_) {}
-      window.storage.set("sbcp-last-tape", snap, false).catch(() => {});
+      WS.set("sbcp-last-tape", snap, false).catch(() => {});
 
       /* Discord (Captain Hook) — structured, clean post for Captain Hook channel.
          Parses the Snapshot Summary and Call to Action into Discord-formatted
@@ -3540,7 +3544,7 @@ ${template}`;
       const m = text.match(/📋[^\n]*CARRYFORWARD[^\n]*\n([\s\S]*?)(?=\n-{3,}\s*\n|\n*$)/i);
       const carry = m ? m[1].trim() : null;
       if (carry) {
-        window.storage.set("sbcp-prev-carry", JSON.stringify({
+        WS.set("sbcp-prev-carry", JSON.stringify({
           session: sessionLabels[session], ts: new Date().toISOString(), carry,
         }), false).catch(() => {});
       }
@@ -3595,7 +3599,7 @@ ${template}`;
       } catch (_) {}
       // 2. cross-device, account-scoped
       try {
-        const res = await window.storage.get("sbcp-calendar", false);
+        const res = await WS.get("sbcp-calendar", false);
         const saved = res?.value ? JSON.parse(res.value) : null;
         if (saved?.weekKey === wk && Array.isArray(saved.events) && saved.events.length) {
           if (!cancelled) {
@@ -3835,7 +3839,7 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
           const fetchedAt = new Date().toISOString();
           const payload = JSON.stringify({ weekKey, events: arr, fetchedAt });
           setCalMeta({ source: "live", at: fetchedAt, weekKey });
-          window.storage.set("sbcp-calendar", payload, false).catch(() => {});
+          WS.set("sbcp-calendar", payload, false).catch(() => {});
           try { localStorage.setItem("sbcp-calendar-local", payload); } catch (_) {}
         }
       } else {
