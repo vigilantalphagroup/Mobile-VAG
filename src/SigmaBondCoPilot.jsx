@@ -36,7 +36,7 @@ import {
   Upload, Crosshair, Flag, ShieldCheck, Activity, Layers, Gauge,
   TrendingUp, TrendingDown, Minus, Lock, Unlock, NotebookPen,
   ChevronRight, Ban, RotateCcw, Target, Wind, CircleDot, ClipboardPaste, AlertTriangle,
-  Download, FolderOpen
+  Download, FolderOpen, History, Pin, Trash2
 } from "lucide-react";
 
 /* ============================================================
@@ -2192,7 +2192,29 @@ const SESSION_GUIDE = {
    you can confirm desktop and mobile are rendering the SAME artifact
    version (there's no separate "deployment" — both devices must have this
    exact code open for storage sync / auto-tape / etc. to match). */
-const BUILD_VERSION = "v2026-06-20k";
+/* v2026-06-21a (desk version history — ADDITIVE, per-device):
+   - NEW: a capped ring of past full-desk snapshots under its OWN key
+     (sbcp-desk-versions, localStorage-only). Distinct from current-desk
+     persistence (sbcp-datasets-local / sbcp-datasets) and from the Σ-leader
+     history (sbcp-history) — touches neither, so removing this layer leaves
+     all prior behavior byte-identical. Grading path (longChecks/shortChecks,
+     gradeDataset, the g* memos) is NOT touched.
+   - Capture is debounced 5s + coalesced on datasets._savedAt, so a multi-CSV
+     load lands as ONE version, and deduped by content vs the newest entry so
+     re-mounts / cross-device adopts don't pile up duplicates.
+   - Ring = last 10 NON-PINNED versions (oldest non-pinned evicted first);
+     pinned versions are never auto-evicted (user deletes by hand).
+   - Restore stamps a FRESH _savedAt (+ _restoredFrom) and writes to both
+     current-desk keys, so it WINS the on-mount/15s adopt-if-newer race
+     instead of being clobbered by a newer window.storage snapshot.
+   - Quota-guarded persist: on QuotaExceededError, prune oldest non-pinned and
+     retry; current desk is a separate key and never at risk.
+   - First-run seed: if the ring is empty but a desk is loaded, seed version 1.
+   - UI: "History" button beside Load V.A.G.; panel lists versions with ET
+     timestamp, tier counts (M/S/E/X), pin toggle, Restore, per-version delete
+     (confirm). No bulk clear (consistent with the no-Clear data-loss policy).
+   - Cross-device sync of the ring is deferred to V2 (per house decision). */
+const BUILD_VERSION = "v2026-06-21a";
 
 /* ── Safe storage wrapper ────────────────────────────────────────────────────
    window.storage is a claude.ai artifact-only API. On any real deployed
@@ -2626,6 +2648,18 @@ export default function SigmaBondCoPilot() {
   const [calMeta, setCalMeta] = useState(null);           // { source: 'local'|'shared'|'live', at, weekKey }
   const [storedAt, setStoredAt] = useState(null);        // ISO string of last save, for session banner
   const [saveStatus, setSaveStatus] = useState(null);    // { ok, msg, ts } — storage write result
+  /* ── Desk version history (v2026-06-21a) — ADDITIVE, per-device ──────────
+     A ring of past full-desk snapshots stored under its OWN key
+     (sbcp-desk-versions). Separate from current-desk persistence and from
+     the Σ-leader history; cross-device ring sync deferred to V2. The
+     capture/restore machinery lives near ingest() below; deskVersionsRef
+     mirrors the state so those functions can read/prune without stale
+     closures, and captureTriggerRef carries the label (paste/import/demo/
+     restore) set by each writer just before it bumps datasets._savedAt. */
+  const [deskVersions, setDeskVersions] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const deskVersionsRef = useRef([]);
+  const captureTriggerRef = useRef("load");
   /* Discord notifications (Captain Hook) — on by default; toggle + webhook
      override persisted to localStorage so it survives reloads per device. */
   const [discordOn, setDiscordOn] = useState(() => {
@@ -2885,6 +2919,55 @@ export default function SigmaBondCoPilot() {
     });
   }, [datasets._savedAt, gMacro, gSector, gStocks, gScans]);
 
+  /* ── Desk version capture (v2026-06-21a) ──────────────────────────────────
+     Debounced + coalesced: any desk write bumps datasets._savedAt, arming a
+     5s timer; further writes inside the window reset it, so a 4-CSV load
+     lands as ONE version. The effect re-runs on every _savedAt change, so the
+     timer that finally fires closes over the freshest desk. captureVersion
+     dedups by content against the newest entry, so re-mounts and cross-device
+     adopts don't create duplicates. */
+  useEffect(() => {
+    const ts = datasets._savedAt;
+    if (!ts) return;
+    const total = (datasets.macro?.length || 0) + (datasets.sector?.length || 0)
+      + (datasets.stocks?.length || 0) + (datasets.scans?.length || 0);
+    if (!total) return;
+    const trig = captureTriggerRef.current || "load";
+    const id = setTimeout(() => {
+      captureVersion(datasets, trig);
+      captureTriggerRef.current = "load";
+    }, 5000);
+    return () => clearTimeout(id);
+  }, [datasets._savedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* mount: load the version ring; if empty, seed version 1 from the current
+     desk so the first post-upgrade load already has history (no data loss). */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("sbcp-desk-versions");
+      const list = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(list) && list.length) {
+        deskVersionsRef.current = list;
+        setDeskVersions(list);
+        return;
+      }
+    } catch (_) {}
+    try {
+      const local = localStorage.getItem("sbcp-datasets-local");
+      if (local) {
+        const ds = JSON.parse(local);
+        const total = (ds.macro?.length || 0) + (ds.sector?.length || 0)
+          + (ds.stocks?.length || 0) + (ds.scans?.length || 0);
+        if (total) {
+          const seeded = [makeVersionEntry(ds, "seed", false)];
+          deskVersionsRef.current = seeded;
+          setDeskVersions(seeded);
+          persistVersions(seeded);
+        }
+      }
+    } catch (_) {}
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   /* streaks: consecutive snapshots (ending at the latest) a symbol spent in the Σ top-10 */
   const streaks = useMemo(() => {
     const m = {};
@@ -3124,10 +3207,125 @@ export default function SigmaBondCoPilot() {
     notrade: decorated.filter((g) => !g.isOptions && g.verdict === "NO-TRADE").length,
   }), [decorated]);
 
+  /* ── Desk version machinery (v2026-06-21a) ─────────────────────────────────
+     Function declarations (hoisted) so the effects above can call them. All
+     read/write the ring via deskVersionsRef + commitVersions; none touch the
+     grading path or the current-desk keys except restoreVersion, which writes
+     a fresh-stamped desk to win the adopt-if-newer race. */
+  function deskKey(ds) {
+    // cheap content identity over the 4 row arrays only (ignores _savedAt)
+    try { return JSON.stringify([ds.macro || [], ds.sector || [], ds.stocks || [], ds.scans || []]); }
+    catch (_) { return "k" + Math.random(); }
+  }
+  const TRIGGER_WORD = { paste: "Paste", import: "Import", demo: "Demo", restore: "Restored", pin: "Pinned", seed: "Seeded", load: "Loaded" };
+  function versionLabel(trigger, savedAt) {
+    const word = TRIGGER_WORD[trigger] || "Loaded";
+    let when = "";
+    try {
+      when = new Date(savedAt).toLocaleString("en-US", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "America/New_York",
+      });
+    } catch (_) {}
+    return when ? `${word} · ${when}` : word;
+  }
+  function makeVersionEntry(ds, trigger, pinned) {
+    const savedAt = ds._savedAt || new Date().toISOString();
+    return {
+      id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      savedAt,
+      label: versionLabel(trigger, savedAt),
+      trigger,
+      pinned: !!pinned,
+      counts: { m: ds.macro?.length || 0, s: ds.sector?.length || 0, e: ds.stocks?.length || 0, x: ds.scans?.length || 0 },
+      datasets: { macro: ds.macro || [], sector: ds.sector || [], stocks: ds.stocks || [], scans: ds.scans || [] },
+    };
+  }
+  /* keep at most RING_MAX *non-pinned* versions (newest kept); pinned versions
+     are never auto-evicted — the user removes them by hand. list is newest-first. */
+  const RING_MAX = 10;
+  function evictRing(list) {
+    let nonPinned = 0;
+    const kept = [];
+    for (const v of list) {
+      if (v.pinned) { kept.push(v); continue; }
+      if (nonPinned < RING_MAX) { kept.push(v); nonPinned++; }
+    }
+    return kept;
+  }
+  /* persist with quota-guard: on QuotaExceededError, drop oldest non-pinned and
+     retry. The current desk lives under sbcp-datasets-local (a different key)
+     and is never touched, so the worst case is the new history entry simply
+     isn't saved — zero data loss. Returns the list that actually persisted. */
+  function persistVersions(list) {
+    try { localStorage.setItem("sbcp-desk-versions", JSON.stringify(list)); return list; }
+    catch (_) {
+      const pruned = [...list];
+      while (pruned.length) {
+        let idx = -1;
+        for (let i = pruned.length - 1; i >= 0; i--) { if (!pruned[i].pinned) { idx = i; break; } }
+        if (idx < 0) break; // only pinned remain — can't shrink further
+        pruned.splice(idx, 1);
+        try { localStorage.setItem("sbcp-desk-versions", JSON.stringify(pruned)); return pruned; } catch (_) {}
+      }
+      return list; // couldn't persist — keep in memory for this session only
+    }
+  }
+  function commitVersions(list) {
+    const final = persistVersions(list);
+    deskVersionsRef.current = final;
+    setDeskVersions(final);
+  }
+  function captureVersion(ds, trigger) {
+    const total = (ds.macro?.length || 0) + (ds.sector?.length || 0) + (ds.stocks?.length || 0) + (ds.scans?.length || 0);
+    if (!total) return;
+    const prev = deskVersionsRef.current;
+    if (prev[0] && deskKey(prev[0].datasets) === deskKey(ds)) return; // dedup vs newest
+    commitVersions(evictRing([makeVersionEntry(ds, trigger, false), ...prev]));
+  }
+  function pinCurrentDesk() {
+    const ds = datasets;
+    const total = (ds.macro?.length || 0) + (ds.sector?.length || 0) + (ds.stocks?.length || 0) + (ds.scans?.length || 0);
+    if (!total) return;
+    const prev = deskVersionsRef.current;
+    if (prev[0] && deskKey(prev[0].datasets) === deskKey(ds)) { // newest already == current desk
+      if (!prev[0].pinned) commitVersions(prev.map((v, i) => (i === 0 ? { ...v, pinned: true } : v)));
+      return;
+    }
+    commitVersions(evictRing([makeVersionEntry(ds, "pin", true), ...prev]));
+  }
+  function togglePinVersion(id) {
+    commitVersions(deskVersionsRef.current.map((v) => (v.id === id ? { ...v, pinned: !v.pinned } : v)));
+  }
+  function deleteVersion(id) {
+    commitVersions(deskVersionsRef.current.filter((v) => v.id !== id));
+  }
+  function restoreVersion(id) {
+    const v = deskVersionsRef.current.find((x) => x.id === id);
+    if (!v) return;
+    setPrevDatasets(datasets); // keep Rogue Alpha symbol-delta intact
+    const savedAt = new Date().toISOString();
+    const next = {
+      macro: v.datasets.macro || [], sector: v.datasets.sector || [],
+      stocks: v.datasets.stocks || [], scans: v.datasets.scans || [],
+      _savedAt: savedAt,      // FRESH stamp — wins the adopt-if-newer race
+      _restoredFrom: v.id,
+    };
+    captureTriggerRef.current = "restore"; // the debounced capture labels the re-snapshot
+    setDatasets(next);
+    const tier = next.stocks.length ? "stocks" : next.scans.length ? "scans"
+      : next.sector.length ? "sector" : next.macro.length ? "macro" : "stocks";
+    setActiveTier(tier);
+    setStoredAt(savedAt);
+    try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
+    WS.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
+    setShowHistory(false);
+  }
+
   function ingest(text) {
     const tier = sniffTier(text);
     const rows = parseCSV(text);
     const savedAt = new Date().toISOString();
+    captureTriggerRef.current = "paste"; // label for the debounced version capture
     setDatasets((d) => {
       setPrevDatasets(d); // snapshot for delta comparison
       const next = { ...d, [tier]: rows, _savedAt: savedAt };
@@ -3200,6 +3398,7 @@ export default function SigmaBondCoPilot() {
           _savedAt: savedAt,
         };
         setPrevDatasets(datasets);
+        captureTriggerRef.current = "import"; // label for the debounced version capture
         setDatasets(next);
         const tier = next.stocks.length ? "stocks" : next.scans.length ? "scans"
           : next.sector.length ? "sector" : next.macro.length ? "macro" : "stocks";
@@ -3223,6 +3422,7 @@ export default function SigmaBondCoPilot() {
       stocks: parseCSV(SAMPLE_STOCKS), scans: parseCSV(SAMPLE_SCANS), _savedAt: new Date().toISOString(),
     };
     setPrevDatasets(datasets);
+    captureTriggerRef.current = "demo"; // label for the debounced version capture
     setDatasets(next);
     setActiveTier("stocks");
     try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
@@ -4265,6 +4465,14 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
             style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
             onChange={loadFile} />
 
+          {/* Desk version history (v2026-06-21a) — per-device ring of past loads */}
+          <button
+            style={{ ...S.btnGhost, padding: "9px 13px", ...(showHistory ? { borderColor: COL.gold, color: COL.gold } : {}) }}
+            onClick={() => setShowHistory((s) => !s)}
+            title="Desk version history — restore or pin a past load (saved on this device)">
+            <History size={14} /> History{deskVersions.length ? ` · ${deskVersions.length}` : ""}
+          </button>
+
           {/* Price status — dot only, no timer text.
               The price dot tells users whether live prices are streaming. */}
           <span style={{ display: "flex", alignItems: "center", gap: 5,
@@ -4295,6 +4503,62 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
           <Tally label="NO-TRADE" n={counts.notrade} color={COL.faint} />
         </div>
       </div>
+
+      {/* ===== DESK VERSION HISTORY (v2026-06-21a) ===== */}
+      {showHistory && (
+        <div style={{ background: COL.surface1, border: `1px solid ${COL.borderSoft}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <div style={{ fontFamily: mono, fontSize: 10.5, color: COL.mist, letterSpacing: ".04em" }}>
+              DESK HISTORY · this device · last {RING_MAX} loads + pins
+            </div>
+            <button style={{ ...S.btnGhost, padding: "6px 11px", fontSize: 11, opacity: anyLoaded ? 1 : 0.5, cursor: anyLoaded ? "pointer" : "not-allowed" }}
+              onClick={pinCurrentDesk} disabled={!anyLoaded}
+              title="Pin the current desk as a permanent checkpoint (never auto-evicted)">
+              <Pin size={13} /> Pin current desk
+            </button>
+          </div>
+          {deskVersions.length === 0 ? (
+            <div style={{ fontFamily: mono, fontSize: 10.5, color: COL.faint, padding: "8px 2px" }}>
+              No saved versions yet. Each desk load is captured automatically a few seconds after you ingest it.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {deskVersions.map((v) => {
+                const isCurrent = (datasets._restoredFrom && datasets._restoredFrom === v.id)
+                  || (!!datasets._savedAt && datasets._savedAt === v.savedAt);
+                return (
+                  <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                    background: COL.surface0, border: `1px solid ${v.pinned ? COL.gold + "55" : COL.borderSoft}`, borderRadius: 9, padding: "8px 10px" }}>
+                    <span onClick={() => togglePinVersion(v.id)}
+                      title={v.pinned ? "Pinned — never auto-evicted. Click to unpin." : "Pin this version"}
+                      style={{ cursor: "pointer", display: "inline-flex", color: v.pinned ? COL.gold : COL.faint }}>
+                      <Pin size={13} fill={v.pinned ? COL.gold : "none"} />
+                    </span>
+                    <div style={{ flex: 1, minWidth: 150 }}>
+                      <div style={{ fontFamily: body, fontSize: 12, color: COL.text }}>
+                        {v.label}
+                        {isCurrent && <span style={{ color: COL.bull, marginLeft: 6, fontSize: 9.5, fontFamily: mono }}>● current</span>}
+                      </div>
+                      <div style={{ fontFamily: mono, fontSize: 9.5, color: COL.faint, marginTop: 2 }}>
+                        {v.counts.m}M · {v.counts.s}S · {v.counts.e}E · {v.counts.x}X
+                      </div>
+                    </div>
+                    <button style={{ ...S.btnGhost, padding: "5px 10px", fontSize: 11 }}
+                      onClick={() => restoreVersion(v.id)}
+                      title="Load this desk back in (the current desk is auto-saved first)">
+                      <RotateCcw size={12} /> Restore
+                    </button>
+                    <span onClick={() => { if (window.confirm("Delete this saved version? This can't be undone.")) deleteVersion(v.id); }}
+                      title="Delete this version" style={{ cursor: "pointer", color: COL.faint, display: "inline-flex", padding: 4 }}>
+                      <Trash2 size={13} />
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ===== EMPTY STATE / PRICE-ONLY BOARD ===== */}
       {!anyLoaded && (
