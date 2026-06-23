@@ -979,6 +979,18 @@ import {
    ============================================================ */
 
 /* ============================================================
+   v2026-06-20k (extended-hours session gate):
+   - NEW: isAfterHoursET() + isExtendedHoursET() helpers (pre-09:30 OR post-16:15 ET).
+   - gradeDataset() now passes ctx.extHours=true when outside regular session.
+   - gradeRow() lean-vote is session-aware: EXT %Chng gets weight 2 in extended
+     hours (vs 1 during session), halved to 1 when volume=0 (illiquid quote).
+     %C-WOPEN weight unchanged — acts as weekly context anchor in all sessions.
+     Volume gates the EXT read: non-zero = active/liquid, confirms the signal.
+   - buildTapeContext() volStr now shows EXT %Chng + compact Volume in ext-hours
+     (not just pre-market) so the LLM tape read includes the correct context.
+   - UI: EXT HOURS badge in the sync banner when loaded outside session.
+   - SetupTab: EXT %Chng row now labelled PRE-MKT / AFTER-HRS / session closed.
+
    v2026-06-20k (production deploy fixes — WS recursion + proxy routing):
    - FIXED: the WS storage wrapper recursed infinitely whenever window.storage
      EXISTED (claude.ai sandbox): get/set/delete called WS.get/set/delete
@@ -1324,9 +1336,16 @@ function etDateKey(d = new Date()) {
   return d.toLocaleDateString("en-US", { timeZone: "America/New_York" }); // M/D/YYYY
 }
 /* EXT %Chng (extended-hours % change) is a pre-market-only read — once the
-   9:30 ET open prints, the regular session's %Change/Momo take over. */
+   9:30 ET open prints, the regular session's %Change/Momo take over.
+   After 16:15 ET the session closes and extended-hours context resumes. */
 function isPreMarketET(d = new Date()) {
   return etMinutesOfDay(d) < 9 * 60 + 30;
+}
+function isAfterHoursET(d = new Date()) {
+  return etMinutesOfDay(d) >= 16 * 60 + 15;
+}
+function isExtendedHoursET(d = new Date()) {
+  return isPreMarketET(d) || isAfterHoursET(d);
 }
 /* Roll-the-Tape auto-fire slots, in ET minutes-of-day. Two snapshots per
    session per house spec:
@@ -1755,13 +1774,33 @@ function gradeRow(raw, ctx) {
      Per house rule, Momo is used STRICTLY for breakout confirmation
      (see `displacement` below, and momoBreakoutOK in the A+ checklist) —
      it no longer carries directional or scoring weight anywhere upstream
-     of that single confirmation role. */
+     of that single confirmation role.
+
+     v2026-06-20k SESSION-GATE (extended hours):
+     Before 09:30 ET (pre-market) or after 16:15 ET (after-hours) the
+     regular session's %Change column is stale/absent.  EXT %Chng becomes
+     the primary directional read (weight 2), %C-WOPEN supplies weekly
+     context (weight 1), and volume acts as a liquidity gate — if volume
+     is zero the EXT %Chng vote is halved (illiquid quote, low conviction).
+     During regular session (09:30–16:15) behaviour is unchanged. */
+  const extHours = ctx.extHours;                             // true pre-09:30 or post-16:15
+  const volOk    = Number.isFinite(volume) && volume > 0;   // any volume = liquid
+
+  // Extended-hours weighting for EXT %Chng
+  const extChngWeight = extHours
+    ? (volOk ? 2 : 1)    // pre/after-market: primary signal (halved when illiquid)
+    : 1;                  // regular session: same lightweight role as before
+
+  // %C-WOPEN (%C-OPEN vs open of week): always meaningful context, unchanged weight
+  // Regular session: cwopen represents intra-day drift — sign0 (±1)
+  // Extended hours: cwopen = weekly bias anchor — same sign0, same weight
+
   const votes =
     wits.dir * 2 +
     (ifp.trig ? ifp.dir * 2 : ifp.dir) +
     (smrtx >= 65 ? 2 : smrtx <= 35 ? -2 : 0) +
     sign0(cwopen) +
-    sign0(extchng) +
+    sign0(extchng) * extChngWeight +
     sign0(vd) +
     p2h +
     pD +
@@ -2503,7 +2542,7 @@ function gradeDataset(rows) {
     let below = 0; for (const m of metrics) if (m < x) below++;
     return (below / metrics.length) * 100;
   };
-  return rows.map((r) => gradeRow(r, { rsRank })).filter((g) => g.symbol && g.symbol !== "—");
+  return rows.map((r) => gradeRow(r, { rsRank, extHours: isExtendedHoursET() })).filter((g) => g.symbol && g.symbol !== "—");
 }
 
 /* ============================================================
@@ -2520,7 +2559,7 @@ export default function SigmaBondCoPilot() {
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("ALL");
   const [favOnly, setFavOnly] = useState(false);
-  const [sortKey, setSortKey] = useState("sigma");
+  const [sortKey, setSortKey] = useState("house");
   /* SSR-safe: window is undefined during server-side rendering (the
      publish pipeline at claude.ai/public/artifacts renders this component
      on the server before hydrating on the client; the in-chat/app artifact
@@ -2963,22 +3002,21 @@ export default function SigmaBondCoPilot() {
       postDiscord(msg.slice(0, 1990), { dedupKey: key });
     }
 
-    // ── TIER 3: QUALIFIED PLAYS (Stocks + Scans, top-5 A+, sector-tagged) ──
-    const equityAplus = [...gStocksLive, ...gScansLive]
+    // ── TIER 3: QUALIFIED PLAYS — Stocks (equities only, no option codes) ──
+    const stocksAplus = gStocksLive
       .filter((r) => !r.isOptions && (r.verdict === "A+ LONG" || r.verdict === "A+ SHORT"))
       .sort((a, b) => {
-        // Favored-fit first, then sigma desc
         const aFit = sectorFitOf(a, favored) ? 1 : 0;
         const bFit = sectorFitOf(b, favored) ? 1 : 0;
         if (bFit !== aFit) return bFit - aFit;
         return b.sigma - a.sigma;
       })
       .slice(0, 5);
-    if (equityAplus.length) {
-      const key = "aplus-equity-" + equityAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
+    if (stocksAplus.length) {
+      const key = "aplus-stocks-" + stocksAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
       const favLongLabels  = favored?.longs?.map((g)  => g.symbol).join(" · ") || "—";
       const favShortLabels = favored?.shorts?.map((g) => g.symbol).join(" · ") || "—";
-      const lines = equityAplus.map((r) => {
+      const lines = stocksAplus.map((r) => {
         const fit = sectorFitOf(r, favored);
         const tag = fit === "long" ? "SECTOR-LONG ✅" : fit === "short" ? "SECTOR-SHORT ✅" : null;
         return tradeLine(r, tag);
@@ -2986,12 +3024,45 @@ export default function SigmaBondCoPilot() {
       const msg = [
         `🎯 **VAG SIGMA BOND — QUALIFIED PLAYS** | ${dateTag} ${timeTag}`,
         divider,
-        `**TOP-5 A+ · STOCKS / SCANS**`,
+        `**TOP-5 A+ · STOCKS**`,
         lines,
         "",
         `📋 Favored sectors → 🟢 ${favLongLabels} · 🔴 ${favShortLabels}`,
         divider,
-        `_Equity tier · ✅ = sits inside a favored sector · Sort: fit → Σ_`,
+        `_Stocks tier · ✅ = sits inside a favored sector · Sort: fit → Σ_`,
+      ].join("\n");
+      postDiscord(msg.slice(0, 1990), { dedupKey: key });
+    }
+
+    // ── TIER 4: SCANS — dynamic watchlist; option codes paired with underliers ──
+    // Options rows are INCLUDED here so IV/IVP metrics surface alongside the stock ticker.
+    const scansAplus = gScansLive
+      .filter((r) => r.verdict === "A+ LONG" || r.verdict === "A+ SHORT")
+      .sort((a, b) => {
+        const aFit = sectorFitOf(a, favored) ? 1 : 0;
+        const bFit = sectorFitOf(b, favored) ? 1 : 0;
+        if (bFit !== aFit) return bFit - aFit;
+        return b.sigma - a.sigma;
+      })
+      .slice(0, 5);
+    if (scansAplus.length) {
+      const key = "aplus-scans-" + scansAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
+      // Scans line includes options contract details if present
+      const scanLine = (r) => {
+        const base = tradeLine(r, null);
+        const contractLine = r.isOptions
+          ? `\n    📄 Contract ${r.symbol} · Strike ${r.strike || "—"} · Exp ${r.expiry || "—"}`
+          : "";
+        return base + contractLine;
+      };
+      const lines = scansAplus.map(scanLine).join("\n");
+      const msg = [
+        `🎯 **VAG SIGMA BOND — SCANS** | ${dateTag} ${timeTag}`,
+        divider,
+        `**TOP-5 A+ · DYNAMIC WATCHLIST**`,
+        lines,
+        divider,
+        `_Scans tier · Options codes included with IV/IVP metrics_`,
       ].join("\n");
       postDiscord(msg.slice(0, 1990), { dedupKey: key });
     }
@@ -3174,15 +3245,19 @@ export default function SigmaBondCoPilot() {
        EXT %Chng (extended-hours move) only matters pre-9:30 ET — once the
        regular session opens, %Change/Momo take over, so it's dropped after
        the open to avoid the LLM citing a stale pre-market number. */
-    const preMkt = isPreMarketET(new Date());
+    const extHoursNow = isExtendedHoursET(new Date());   // pre-09:30 OR post-16:15
+    const preMkt = isPreMarketET(new Date());              // kept for backward compat
     const volStr = (g) => {
       const parts = [];
       if (Number.isFinite(g.implvol)) parts.push(`IV${g.implvol}%`);
       if (Number.isFinite(g.ivp)) parts.push(`IVP${g.ivp}`);
       if (Number.isFinite(g.vpct)) parts.push(`ΔV${g.vpct > 0 ? "+" : ""}${g.vpct}`);
       if (Number.isFinite(g.vd)) parts.push(`VD${g.vd > 0 ? "+" : ""}${g.vd}`);
-      if (preMkt && Number.isFinite(g.extchng) && Math.abs(g.extchng) >= 0.2) {
+      if (extHoursNow && Number.isFinite(g.extchng) && Math.abs(g.extchng) >= 0.2) {
         parts.push(`EXT${g.extchng > 0 ? "+" : ""}${g.extchng}%`);
+      }
+      if (extHoursNow && Number.isFinite(g.volume) && g.volume > 0) {
+        parts.push(`Vol${g.volume >= 1e6 ? `${(g.volume/1e6).toFixed(1)}M` : g.volume >= 1e3 ? `${(g.volume/1e3).toFixed(0)}K` : g.volume}`);
       }
       return parts.length ? ` [${parts.join(" ")}]` : "";
     };
@@ -3680,7 +3755,7 @@ ${template}`;
 
           const msg = [
             `🏈 **VAG SIGMA BOND · ${sessionLabel} SNAPSHOT** | ${dateTag2} ${timeTag2}`,
-            `_(CSV-only · LLM offline)_`,
+            `_(MW-only · LLM offline)_`,
             divider2,
             aplusLong.length  ? `**A+ LONG SETUPS**\n${longLines}`  : "No A+ LONG setups loaded",
             aplusShort.length ? `**A+ SHORT SETUPS**\n${shortLines}` : "No A+ SHORT setups loaded",
@@ -3689,7 +3764,7 @@ ${template}`;
             `  🟢 ${favLongs}`,
             `  🔴 ${favShorts}`,
             divider2,
-            `_Load all CSV tiers for full Sigma Bond analysis_`,
+            `_Load all MW tiers for full Sigma Bond analysis_`,
           ].join("\n");
 
           postDiscord(msg.slice(0, 1990), { dedupKey: dedupKey2 });
@@ -4084,6 +4159,12 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
               timeZone: "America/New_York", timeZoneName: "short",
             })}
           </span>
+          {/* Extended-hours mode badge — shown pre-09:30 or post-16:15 ET */}
+          {isExtendedHoursET() && (
+            <span style={{ marginLeft: 10, fontSize: 10, fontFamily: mono, color: COL.gold, background: `${COL.gold}18`, borderRadius: 8, padding: "2px 8px", letterSpacing: "0.03em" }}>
+              ⏰ EXT HOURS · EXT%Chng + %C-OPEN + Volume driving grades
+            </span>
+          )}
           {/* Clear intentionally removed — prevents accidental data loss */}
         </div>
       )}
@@ -4098,7 +4179,7 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
           </button>
         ))}
         {apiAvailable === false && (
-          <span style={{ fontSize: 10, fontFamily: mono, color: COL.faint, marginLeft: 2 }}>🔌 offline · CSV grades active</span>
+          <span style={{ fontSize: 10, fontFamily: mono, color: COL.faint, marginLeft: 2 }}>🔌 offline · MW grades active</span>
         )}
         {tapeOutput && !tapeOutput.loading && (
           <button style={S.tapeClear} onClick={() => setTapeOutput(null)}>✕</button>
@@ -5381,6 +5462,8 @@ function BiasTab({ g }) {
 function SetupTab({ g }) {
   const iv = ivContext(g.ivp, g.implvol);
   const preMkt = isPreMarketET(new Date());
+  const extHoursNow = isExtendedHoursET(new Date());
+  const extLabel = preMkt ? "PRE-MKT" : extHoursNow ? "AFTER-HRS" : "closed";
   return (
     <div>
       <SectionLabel icon={Layers} text="Setup quality — participation &amp; volatility context" />
@@ -5401,9 +5484,9 @@ function SetupTab({ g }) {
         <KV k="Impl Vol" v={Number.isFinite(g.implvol) ? `${g.implvol}%` : "—"} dir={0} />
         <KV k="-V% (vol Δ)" v={Number.isFinite(g.vpct) ? `${g.vpct > 0 ? "+" : ""}${g.vpct}` : "—"} dir={g.vpct > 1.2 ? 1 : g.vpct < -1 ? -1 : 0} />
         <KV k="VD%" v={Number.isFinite(g.vd) ? g.vd : "—"} dir={sign0(g.vd)} />
-        <KV k={`EXT %Chng${preMkt ? "" : " (closed)"}`}
-          v={preMkt && Number.isFinite(g.extchng) ? `${g.extchng > 0 ? "+" : ""}${g.extchng}%` : "—"}
-          dir={preMkt ? (sign0(g.extchng) || 0) : 0} />
+        <KV k={`EXT %Chng${extHoursNow ? ` (${extLabel})` : " (session closed)"}`}
+          v={extHoursNow && Number.isFinite(g.extchng) ? `${g.extchng > 0 ? "+" : ""}${g.extchng}%` : "—"}
+          dir={extHoursNow ? (sign0(g.extchng) || 0) : 0} />
       </div>
       {iv && (
         <p style={{ ...S.refNote, marginTop: 0, marginBottom: 12 }}>
