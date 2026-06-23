@@ -979,6 +979,25 @@ import {
    ============================================================ */
 
 /* ============================================================
+   v2026-06-20k (production deploy fixes — WS recursion + proxy routing):
+   - FIXED: the WS storage wrapper recursed infinitely whenever window.storage
+     EXISTED (claude.ai sandbox): get/set/delete called WS.get/set/delete
+     instead of window.storage.get/set/delete. It only "worked" on Netlify
+     because window.storage is undefined there (the no-op branch). Now calls
+     the real platform methods in the sandbox and no-ops in production.
+   - FIXED: callClaude() (and the apiAvailable probe) called api.anthropic.com
+     DIRECTLY at every site — the documented proxy routing was never actually
+     wired, so Roll the Tape / Chart image mode / Econ Calendar all hit a 404
+     on Netlify. Added IN_CLAUDE_SANDBOX detection + CLAUDE_API_URL router:
+     api.anthropic.com directly inside the claudeusercontent.com sandbox,
+     /api/claude everywhere else. All 4 fetch sites now use CLAUDE_API_URL.
+   - DEPLOY REQUIREMENTS (outside this file):
+       1. netlify/functions/claude-proxy.js must exist at that exact path.
+       2. netlify.toml must rewrite  /api/claude -> /.netlify/functions/claude-proxy
+          (status 200, force = true) and the proxy must pass through SSE when
+          the request body sets stream:true.
+       3. ANTHROPIC_API_KEY set in Netlify -> Site settings -> Environment vars.
+
    v2026-06-20h (mobile horizontal-scroll architecture fix):
    A real device screenshot (Android, narrow viewport) showed v2026-
    06-20b's fix was insufficient: the page-wide overflow-x:auto safety
@@ -2134,7 +2153,7 @@ const SESSION_GUIDE = {
    you can confirm desktop and mobile are rendering the SAME artifact
    version (there's no separate "deployment" — both devices must have this
    exact code open for storage sync / auto-tape / etc. to match). */
-const BUILD_VERSION = "v2026-06-20j";
+const BUILD_VERSION = "v2026-06-20k";
 
 /* ── Safe storage wrapper ────────────────────────────────────────────────────
    window.storage is a claude.ai artifact-only API. On any real deployed
@@ -2146,15 +2165,32 @@ const BUILD_VERSION = "v2026-06-20j";
    a "bonus cross-device sync" layer, not the primary store. */
 const WS = {
   get: (...args) => window.storage
-    ? WS.get(...args)
+    ? window.storage.get(...args)
     : Promise.resolve(null),
   set: (...args) => window.storage
-    ? WS.set(...args)
+    ? window.storage.set(...args)
     : Promise.resolve(null),
   delete: (...args) => window.storage
-    ? WS.delete(...args)
+    ? window.storage.delete(...args)
     : Promise.resolve(null),
 };
+
+/* ── Claude API endpoint router (v2026-06-20k) ──────────────────────────────
+   In the claude.ai artifact sandbox the app runs on claudeusercontent.com,
+   where direct POSTs to api.anthropic.com are CORS-whitelisted (the key is
+   injected by the platform). On a real deployed host (Netlify, etc.) those
+   direct calls are CORS-blocked, so every request must route through the
+   serverless proxy at /api/claude, which attaches ANTHROPIC_API_KEY
+   server-side and forwards to api.anthropic.com.
+   REQUIRED: netlify.toml must redirect  /api/claude  ->
+   /.netlify/functions/claude-proxy  (200 rewrite, not 301), and the proxy
+   must stream responses through when the request body has stream:true. */
+const IN_CLAUDE_SANDBOX =
+  typeof window !== "undefined" &&
+  /(^|\.)claudeusercontent\.com$|(^|\.)claude\.ai$/.test(window.location.hostname);
+const CLAUDE_API_URL = IN_CLAUDE_SANDBOX
+  ? "https://api.anthropic.com/v1/messages"
+  : "/api/claude";
 
 /* Embedded assets — base64-encoded so the artifact is fully self-contained
    with no external image dependencies. */
@@ -3105,7 +3141,7 @@ export default function SigmaBondCoPilot() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("https://api.anthropic.com/v1/messages", {
+        const r = await fetch(CLAUDE_API_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1,
@@ -3153,7 +3189,7 @@ export default function SigmaBondCoPilot() {
       const body = { model: "claude-sonnet-4-6", max_tokens: maxTokens,
         messages: [{ role: "user", content: userContent }], stream: true };
       if (system) body.system = system;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(CLAUDE_API_URL, {
         method: "POST", headers, body: JSON.stringify(body),
       });
       if (!res.ok || !res.body) {
@@ -3207,14 +3243,14 @@ export default function SigmaBondCoPilot() {
       if (tools) body.tools = tools;
       if (wantStream) body.stream = true;
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(CLAUDE_API_URL, {
         method: "POST", headers, body: JSON.stringify(body),
       });
 
       if (wantStream) {
         if (!res.ok || !res.body) {
           // Streamed attempt failed — fall back to a normal non-streaming call for this turn
-          const data2 = await fetch("https://api.anthropic.com/v1/messages", {
+          const data2 = await fetch(CLAUDE_API_URL, {
             method: "POST", headers, body: JSON.stringify({ ...body, stream: false }),
           }).then((r) => r.json());
           lastData = data2;
