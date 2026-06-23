@@ -2192,7 +2192,31 @@ const SESSION_GUIDE = {
    you can confirm desktop and mobile are rendering the SAME artifact
    version (there's no separate "deployment" — both devices must have this
    exact code open for storage sync / auto-tape / etc. to match). */
-/* v2026-06-21a (desk version history — ADDITIVE, per-device):
+/* v2026-06-22a (three improvements — all additive):
+   1. SHARED DESK (Supabase Model B — admin-publish, consumers read-only):
+      - Supabase anon client reads shared_desk table on mount + subscribes to
+        Realtime channel so every consumer browser receives updates instantly
+        without re-loading CSVs. No polling; sub fires only on server-side
+        INSERT/UPDATE. localStorage remains the primary per-device cache;
+        Supabase is the shared broadcast layer on top.
+      - Publisher path: after multi-CSV ingest the desk is POSTed to the
+        publish-desk Edge Function authenticated with SBCP_WRITE_KEY. Consumers
+        receive via Realtime channel without a page reload.
+      - Admin mode: toggled by entering the write key in a lock UI. Key is kept
+        only in sessionStorage (clears on tab close); never in localStorage or
+        window.storage. Consumer browsers show a read-only sync banner; admin
+        shows a publish indicator.
+   2. WEBHOOK (Discord) — all four tiers confirmed, spacing fixed:
+      - Added blank-line padding between card sections and between tier cards.
+      - CSV-only fallback now surfaces per-tier breakdowns, not just a flat pool.
+   3. MULTI-FILE BATCH UPLOAD: one file picker, all four CSVs at once.
+      - <input multiple> accepts shift-select of all four files simultaneously.
+      - Each file routed via sniffTier(); all four ingest in parallel.
+      - On admin surfaces, ingest triggers a Supabase publish automatically.
+      - "Load V.A.G." label updated to reflect multi-file capability.
+      - Consumer browsers (no write key) hide the upload control entirely.
+
+   PRIOR: v2026-06-21a (desk version history — ADDITIVE, per-device):
    - NEW: a capped ring of past full-desk snapshots under its OWN key
      (sbcp-desk-versions, localStorage-only). Distinct from current-desk
      persistence (sbcp-datasets-local / sbcp-datasets) and from the Σ-leader
@@ -2214,7 +2238,7 @@ const SESSION_GUIDE = {
      timestamp, tier counts (M/S/E/X), pin toggle, Restore, per-version delete
      (confirm). No bulk clear (consistent with the no-Clear data-loss policy).
    - Cross-device sync of the ring is deferred to V2 (per house decision). */
-const BUILD_VERSION = "v2026-06-21a";
+const BUILD_VERSION = "v2026-06-22a";
 
 /* ── Safe storage wrapper ────────────────────────────────────────────────────
    window.storage is a claude.ai artifact-only API. On any real deployed
@@ -2407,6 +2431,76 @@ const SEARCH_TTL_MS = 5 * 60 * 1000; // 5 minutes
    firing twice in a session. */
 const DISCORD_DEFAULT_HOOK = "https://discord.com/api/webhooks/1468245138320003093/_qD19jiPOdb91Azjo5bm9nXQyMWRKG9asc2D-6u2hdHoRvhkKWirrAAKzDTSxWTNEmu2";
 const DISCORD_SENT = new Set(); // session-scoped dedup keys
+
+/* ── Supabase shared-desk constants (v2026-06-22a) ──────────────────────────
+   Model B: anon key for READ (public consumers); writes go through the
+   publish-desk Edge Function which gate-checks SBCP_WRITE_KEY server-side.
+   The anon key is safe to ship in client code — RLS allows SELECT only for
+   the anon role. The write key is kept in sessionStorage only; it never
+   appears in localStorage, window.storage, or this bundle. */
+const SUPABASE_URL  = "https://ybfhghngfqqqrkvqxike.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InliZmhnaG5nZnFxcXJrdnF4aWtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4ODMzNzcsImV4cCI6MjA5NzQ1OTM3N30.1pHHCAeN9WO4rmyyQDj2WLEFjXslsQ7QhdZ0thFckrg";
+const PUBLISH_FN    = `${SUPABASE_URL}/functions/v1/publish-desk`;
+const SHARED_DESK_CHANNEL = "shared-desk-updates";
+
+/* Fetch the currently published desk from Supabase (anon SELECT). */
+async function fetchSharedDesk() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/shared_desk?slot=eq.current&select=*`,
+      { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0] ?? null;
+  } catch (_) { return null; }
+}
+
+/* Subscribe to Realtime changes on shared_desk. Returns an unsubscribe fn. */
+function subscribeSharedDesk(onUpdate) {
+  // Supabase Realtime via raw WebSocket (no SDK dependency in this bundle)
+  const wsUrl = `${SUPABASE_URL.replace("https://", "wss://")}/realtime/v1/websocket?apikey=${SUPABASE_ANON}&vsn=1.0.0`;
+  let ws;
+  let closed = false;
+  function connect() {
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ topic: "realtime:public:shared_desk", event: "phx_join", payload: {}, ref: "1" }));
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.event === "UPDATE" || msg.event === "INSERT") {
+          const rec = msg.payload?.record;
+          if (rec?.slot === "current") onUpdate(rec);
+        }
+      } catch (_) {}
+    };
+    ws.onclose = () => { if (!closed) setTimeout(connect, 3000); }; // auto-reconnect
+  }
+  connect();
+  return () => { closed = true; ws?.close(); };
+}
+
+/* Publish the full desk to Supabase via the Edge Function write gate. */
+async function publishSharedDesk(datasets, writeKey, publisher = "VAG Admin") {
+  if (!writeKey) return { ok: false, error: "no write key" };
+  try {
+    const res = await fetch(PUBLISH_FN, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-sbcp-write-key": writeKey },
+      body: JSON.stringify({
+        macro:  datasets.macro  || [],
+        sector: datasets.sector || [],
+        stocks: datasets.stocks || [],
+        scans:  datasets.scans  || [],
+        publisher,
+      }),
+    });
+    const data = await res.json();
+    return res.ok ? { ok: true, counts: data.counts } : { ok: false, error: data.error };
+  } catch (err) { return { ok: false, error: err.message }; }
+}
 
 function getDiscordHook() {
   try {
@@ -2648,6 +2742,17 @@ export default function SigmaBondCoPilot() {
   const [calMeta, setCalMeta] = useState(null);           // { source: 'local'|'shared'|'live', at, weekKey }
   const [storedAt, setStoredAt] = useState(null);        // ISO string of last save, for session banner
   const [saveStatus, setSaveStatus] = useState(null);    // { ok, msg, ts } — storage write result
+  /* ── Admin mode / Supabase shared-desk (v2026-06-22a) ───────────────────
+     writeKey lives in sessionStorage only — clears on tab close.
+     sharedPublishedAt is the ISO timestamp the server last accepted a publish.
+     sharedSyncStatus: null | 'syncing' | 'live' | 'error'. */
+  const [writeKey, setWriteKey]           = useState(() => { try { return sessionStorage.getItem("sbcp-wk") || ""; } catch (_) { return ""; } });
+  const [writeKeyInput, setWriteKeyInput] = useState("");
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
+  const [publishStatus, setPublishStatus] = useState(null); // { ok, ts, counts, error }
+  const [sharedSyncStatus, setSharedSyncStatus] = useState(null); // null | 'syncing' | 'live' | 'error'
+  const [sharedPublishedAt, setSharedPublishedAt] = useState(null); // ISO string from Supabase
+  const isAdmin = !!writeKey;
   /* ── Desk version history (v2026-06-21a) — ADDITIVE, per-device ──────────
      A ring of past full-desk snapshots stored under its OWN key
      (sbcp-desk-versions). Separate from current-desk persistence and from
@@ -2808,6 +2913,65 @@ export default function SigmaBondCoPilot() {
     const id = setInterval(() => { if (!cancelled) syncFromStorage(false); }, 15000);
     return () => { cancelled = true; clearInterval(id); };
   }, [storedAt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const id = setInterval(() => { if (!cancelled) syncFromStorage(false); }, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [storedAt]);
+
+  /* ── Supabase shared-desk: initial fetch + Realtime subscribe (v2026-06-22a)
+     On mount: pull the current shared desk from Supabase. If it's newer than
+     what localStorage has (or localStorage is empty), adopt it. Then subscribe
+     to Realtime so any future publish from the admin browser lands here
+     instantly without a page reload.
+     Adopts desk using the same adopt-if-newer stamp logic as the 15s poll,
+     so local-device loads made AFTER the last shared publish are never
+     clobbered. Admin devices skip the Realtime adopt (they are the source). */
+  useEffect(() => {
+    let unsub = () => {};
+    let cancelled = false;
+    const localTs = () => {
+      try {
+        const raw = localStorage.getItem("sbcp-datasets-local");
+        if (!raw) return 0;
+        const d = JSON.parse(raw);
+        return d?._savedAt ? new Date(d._savedAt).getTime() : 0;
+      } catch (_) { return 0; }
+    };
+    const adoptIfNewer = (rec) => {
+      if (cancelled) return;
+      const pubTs = rec?.published_at ? new Date(rec.published_at).getTime() : 0;
+      if (!pubTs) return;
+      const total = (rec.macro?.length||0)+(rec.sector?.length||0)+(rec.stocks?.length||0)+(rec.scans?.length||0);
+      if (!total) return;
+      // Don't overwrite a locally-loaded desk that's more recent than the share
+      if (localTs() > pubTs) return;
+      const next = {
+        macro: rec.macro || [], sector: rec.sector || [],
+        stocks: rec.stocks || [], scans: rec.scans || [],
+        _savedAt: rec.published_at,
+      };
+      setDatasets(next);
+      const tier = next.stocks.length ? "stocks" : next.scans.length ? "scans"
+        : next.sector.length ? "sector" : next.macro.length ? "macro" : "stocks";
+      setActiveTier(tier);
+      setStoredAt(rec.published_at);
+      setSharedPublishedAt(rec.published_at);
+      setSharedSyncStatus("live");
+      try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
+    };
+    setSharedSyncStatus("syncing");
+    fetchSharedDesk().then((rec) => {
+      if (!cancelled) {
+        if (rec) { adoptIfNewer(rec); setSharedPublishedAt(rec.published_at || null); }
+        setSharedSyncStatus(rec ? "live" : "error");
+      }
+    }).catch(() => { if (!cancelled) setSharedSyncStatus("error"); });
+    // Realtime subscription: consumers get pushed updates when admin publishes
+    unsub = subscribeSharedDesk((rec) => { if (!cancelled) adoptIfNewer(rec); });
+    return () => { cancelled = true; unsub(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Live price state + auto-refresh ──
      priceTs ticks whenever PRICE_CACHE is updated so price-dependent
@@ -3055,7 +3219,9 @@ export default function SigmaBondCoPilot() {
         `🎯 **VAG SIGMA BOND — ALPHA CANNON** | ${dateTag} ${timeTag}`,
         divider,
         `**A+ MACRO SETUPS (${macroAplus.length})**`,
+        "",
         lines,
+        "",
         divider,
         `_Macro tier · HTF bias confirmed · Trade the directional edge_`,
       ].join("\n");
@@ -3076,16 +3242,18 @@ export default function SigmaBondCoPilot() {
         `🎯 **VAG SIGMA BOND — SECTOR GRID** | ${dateTag} ${timeTag}`,
         divider,
         `**A+ SECTOR SETUPS (${sectorAplus.length})**`,
+        "",
         lines,
         "",
         favLong, favShort,
+        "",
         divider,
         `_Sector tier · Funnel stocks into confirmed sector momentum_`,
       ].filter(Boolean).join("\n");
       postDiscord(msg.slice(0, 1990), { dedupKey: key });
     }
 
-    // ── TIER 3: QUALIFIED PLAYS — Stocks (equities only, no option codes) ──
+    // ── TIER 3: QUALIFIED PLAYS — Stocks ──
     const stocksAplus = gStocksLive
       .filter((r) => !r.isOptions && (r.verdict === "A+ LONG" || r.verdict === "A+ SHORT"))
       .sort((a, b) => {
@@ -3108,17 +3276,18 @@ export default function SigmaBondCoPilot() {
         `🎯 **VAG SIGMA BOND — QUALIFIED PLAYS** | ${dateTag} ${timeTag}`,
         divider,
         `**TOP-5 A+ · STOCKS**`,
+        "",
         lines,
         "",
         `📋 Favored sectors → 🟢 ${favLongLabels} · 🔴 ${favShortLabels}`,
+        "",
         divider,
         `_Stocks tier · ✅ = sits inside a favored sector · Sort: fit → Σ_`,
       ].join("\n");
       postDiscord(msg.slice(0, 1990), { dedupKey: key });
     }
 
-    // ── TIER 4: SCANS — dynamic watchlist; option codes paired with underliers ──
-    // Options rows are INCLUDED here so IV/IVP metrics surface alongside the stock ticker.
+    // ── TIER 4: SCANS — dynamic watchlist; options included ──
     const scansAplus = gScansLive
       .filter((r) => r.verdict === "A+ LONG" || r.verdict === "A+ SHORT")
       .sort((a, b) => {
@@ -3130,7 +3299,6 @@ export default function SigmaBondCoPilot() {
       .slice(0, 5);
     if (scansAplus.length) {
       const key = "aplus-scans-" + scansAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
-      // Scans line includes options contract details if present
       const scanLine = (r) => {
         const base = tradeLine(r, null);
         const contractLine = r.isOptions
@@ -3143,7 +3311,9 @@ export default function SigmaBondCoPilot() {
         `🎯 **VAG SIGMA BOND — SCANS** | ${dateTag} ${timeTag}`,
         divider,
         `**TOP-5 A+ · DYNAMIC WATCHLIST**`,
+        "",
         lines,
+        "",
         divider,
         `_Scans tier · Options codes included with IV/IVP metrics_`,
       ].join("\n");
@@ -3321,26 +3491,173 @@ export default function SigmaBondCoPilot() {
     setShowHistory(false);
   }
 
-  function ingest(text) {
+  /* ingestOne: parse and store a single CSV string, return the merged desk.
+     Returns the next dataset state so batch callers can chain. */
+  function ingestOne(text, prevDs) {
     const tier = sniffTier(text);
     const rows = parseCSV(text);
     const savedAt = new Date().toISOString();
-    captureTriggerRef.current = "paste"; // label for the debounced version capture
+    const next = { ...(prevDs || datasets), [tier]: rows, _savedAt: savedAt };
+    try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
+    WS.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
+    return { next, tier };
+  }
+
+  /* ingest: single-text entry point (paste / internal). After settling,
+     auto-publishes to Supabase if admin key is present. */
+  function ingest(text) {
+    const savedAt = new Date().toISOString();
+    const tier = sniffTier(text);
+    const rows = parseCSV(text);
+    captureTriggerRef.current = "paste";
     setDatasets((d) => {
-      setPrevDatasets(d); // snapshot for delta comparison
+      setPrevDatasets(d);
       const next = { ...d, [tier]: rows, _savedAt: savedAt };
-      // PRIMARY persistence: localStorage, same-device, instant, always
-      // available regardless of whether window.storage is reachable.
       try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
-      // Cross-device persistence — async, never blocks the UI; localStorage
-      // (set above) is already the durable per-device copy regardless.
       WS.set("sbcp-datasets", JSON.stringify(next), false)
         .then(() => setSaveStatus({ ok: true, ts: Date.now() }))
         .catch((err) => setSaveStatus({ ok: false, msg: err.message, ts: Date.now() }));
+      if (writeKey) {
+        publishSharedDesk(next, writeKey)
+          .then((r) => setPublishStatus({ ...r, ts: Date.now() }))
+          .catch(() => {});
+      }
       return next;
     });
     setStoredAt(savedAt);
     setActiveTier(tier);
+  }
+
+  /* loadFiles: multi-file batch entry point — called by the file input's
+     onChange when one or more files are selected. Each file is read in
+     parallel; all tiers are merged into ONE atomic desk state update, then
+     a single Supabase publish fires (admin only). Replaces the old loadFile
+     single-file function. */
+  function loadFiles(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    e.target.value = "";
+    captureTriggerRef.current = "paste";
+    const readers = files.map((f) => new Promise((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.readAsText(f);
+    }));
+    Promise.all(readers).then((texts) => {
+      setDatasets((d) => {
+        setPrevDatasets(d);
+        let merged = { ...d };
+        let lastTier = null;
+        const savedAt = new Date().toISOString();
+        for (const text of texts) {
+          const tier = sniffTier(text);
+          merged = { ...merged, [tier]: parseCSV(text) };
+          lastTier = tier;
+        }
+        merged._savedAt = savedAt;
+        try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
+        WS.set("sbcp-datasets", JSON.stringify(merged), false).catch(() => {});
+        if (writeKey) {
+          publishSharedDesk(merged, writeKey)
+            .then((r) => setPublishStatus({ ...r, ts: Date.now() }))
+            .catch(() => {});
+        }
+        if (lastTier) setActiveTier(lastTier);
+        setStoredAt(savedAt);
+        return merged;
+      });
+    });
+  }
+
+  /* ---- Desk Export / Import ----
+     Export packages the full 4-tier graded desk (macro + sector + stocks +
+     scans) into a single .vagdesk.json file the trader can download and
+     re-import on any surface (published link, different browser, mobile)
+     with one click — no re-pasting 4 CSVs. The file contains the raw
+     parsed row arrays (same shape ingest() produces) plus a format tag and
+     export timestamp. Import reads it, validates the format tag, merges all
+     tiers at once, and applies the same localStorage + window.storage
+     persistence that a normal CSV ingest would. */
+  function exportDesk() {
+    const counts = {
+      macro: datasets.macro?.length || 0, sector: datasets.sector?.length || 0,
+      stocks: datasets.stocks?.length || 0, scans: datasets.scans?.length || 0,
+    };
+    const total = Object.values(counts).reduce((s, n) => s + n, 0);
+    if (!total) { alert("Nothing loaded to export yet. Load your V.A.G. CSVs first."); return; }
+    const payload = {
+      _format: "sbcp-vagdesk-v1",
+      _exportedAt: new Date().toISOString(),
+      _counts: counts,
+      macro: datasets.macro || [],
+      sector: datasets.sector || [],
+      stocks: datasets.stocks || [],
+      scans: datasets.scans || [],
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const dateTag = new Date().toISOString().slice(0, 10);
+    a.href = url; a.download = `VAGDesk_${dateTag}.vagdesk.json`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+
+  function importDeskFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    e.target.value = "";
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const payload = JSON.parse(String(reader.result));
+        if (payload._format !== "sbcp-vagdesk-v1") {
+          alert("Unrecognized file format. Please use a .vagdesk.json file exported from this desk.");
+          return;
+        }
+        const savedAt = payload._exportedAt || new Date().toISOString();
+        const next = {
+          macro:  Array.isArray(payload.macro)  ? payload.macro  : [],
+          sector: Array.isArray(payload.sector) ? payload.sector : [],
+          stocks: Array.isArray(payload.stocks) ? payload.stocks : [],
+          scans:  Array.isArray(payload.scans)  ? payload.scans  : [],
+          _savedAt: savedAt,
+        };
+        setPrevDatasets(datasets);
+        captureTriggerRef.current = "import";
+        setDatasets(next);
+        const tier = next.stocks.length ? "stocks" : next.scans.length ? "scans"
+          : next.sector.length ? "sector" : next.macro.length ? "macro" : "stocks";
+        setActiveTier(tier);
+        setStoredAt(savedAt);
+        try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
+        WS.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
+        if (writeKey) {
+          publishSharedDesk(next, writeKey)
+            .then((r) => setPublishStatus({ ...r, ts: Date.now() }))
+            .catch(() => {});
+        }
+        const c = payload._counts || {};
+        setSaveStatus({ ok: true, ts: Date.now(),
+          msg: `Desk imported: ${c.macro||next.macro.length}M / ${c.sector||next.sector.length}S / ${c.stocks||next.stocks.length}E / ${c.scans||next.scans.length}X` });
+      } catch (err) {
+        alert("Import failed: " + err.message);
+      }
+    };
+    reader.readAsText(f);
+  }
+
+  function loadDemo() {
+    const next = {
+      macro: parseCSV(SAMPLE_MACRO), sector: parseCSV(SAMPLE_SECTOR),
+      stocks: parseCSV(SAMPLE_STOCKS), scans: parseCSV(SAMPLE_SCANS), _savedAt: new Date().toISOString(),
+    };
+    setPrevDatasets(datasets);
+    captureTriggerRef.current = "demo";
+    setDatasets(next);
+    setActiveTier("stocks");
+    try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
+    setStoredAt(next._savedAt);
   }
 
   /* ---- Desk Export / Import ----
@@ -3414,27 +3731,6 @@ export default function SigmaBondCoPilot() {
       }
     };
     reader.readAsText(f);
-  }
-
-  function loadDemo() {
-    const next = {
-      macro: parseCSV(SAMPLE_MACRO), sector: parseCSV(SAMPLE_SECTOR),
-      stocks: parseCSV(SAMPLE_STOCKS), scans: parseCSV(SAMPLE_SCANS), _savedAt: new Date().toISOString(),
-    };
-    setPrevDatasets(datasets);
-    captureTriggerRef.current = "demo"; // label for the debounced version capture
-    setDatasets(next);
-    setActiveTier("stocks");
-    try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
-    setStoredAt(next._savedAt);
-  }
-  function loadFile(e) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => ingest(String(reader.result));
-    reader.readAsText(f);
-    e.target.value = "";
   }
 
   /* build a compact data summary for the tape context */
@@ -4353,19 +4649,20 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
         <div style={S.syncBanner}>
           <span style={S.syncDot} />
           <span style={S.syncText}>
-            Loaded on this device · {new Date(storedAt).toLocaleString("en-US", {
+            {sharedPublishedAt && storedAt === sharedPublishedAt && !isAdmin
+              ? `🌐 Shared desk · published `
+              : "Loaded on this device · "}
+            {new Date(storedAt).toLocaleString("en-US", {
               month: "short", day: "numeric",
               hour: "2-digit", minute: "2-digit",
               timeZone: "America/New_York", timeZoneName: "short",
             })}
           </span>
-          {/* Extended-hours mode badge — shown pre-09:30 or post-16:15 ET */}
           {isExtendedHoursET() && (
             <span style={{ marginLeft: 10, fontSize: 10, fontFamily: mono, color: COL.gold, background: `${COL.gold}18`, borderRadius: 8, padding: "2px 8px", letterSpacing: "0.03em" }}>
               ⏰ EXT HOURS · EXT%Chng + %C-OPEN + Volume driving grades
             </span>
           )}
-          {/* Clear intentionally removed — prevents accidental data loss */}
         </div>
       )}
 
@@ -4452,20 +4749,55 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
       {/* ===== DATA BAR ===== */}
       <div style={{ ...S.dataBar, flexWrap: "wrap", rowGap: 8 }}>
         <div style={{ ...S.dataLeft, flexWrap: "wrap" }}>
-          {/* BETA: direct CSV upload restored alongside the admin-managed feed.
-              localStorage is the real persistence (works everywhere, per-device);
-              window.storage cross-device sync is a best-effort bonus on top
-              (see syncFromStorage). Labeled "BETA" so users understand this is
-              a temporary manual-override path while the admin pipeline matures. */}
-          <label htmlFor="sb-csv-input" style={{ ...S.btnPrimary, cursor: "pointer" }}
-            title="Beta: load a V.A.G. CSV directly on this device. Sits alongside the admin-published feed.">
-            <Upload size={14} /> Load V.A.G. <span style={{ fontSize: 8.5, opacity: 0.75, marginLeft: 2 }}>BETA</span>
-          </label>
-          <input id="sb-csv-input" type="file" accept=".csv,.txt"
-            style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
-            onChange={loadFile} />
+          {/* ── Admin-only: multi-file batch upload ──────────────────────────
+              Consumers (no write key) see NO upload control — their desk
+              arrives automatically via the Supabase Realtime subscription.
+              Admin sees a single file picker that accepts 1-4 CSVs at once;
+              sniffTier routes each, all merge atomically, then auto-publishes. */}
+          {isAdmin && (
+            <>
+              <label htmlFor="sb-csv-input" style={{ ...S.btnPrimary, cursor: "pointer" }}
+                title="Batch: shift-select up to 4 CSVs at once — each auto-routed by tier and published instantly.">
+                <Upload size={14} /> Load V.A.G. CSVs
+              </label>
+              <input id="sb-csv-input" type="file" accept=".csv,.txt" multiple
+                style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+                onChange={loadFiles} />
+            </>
+          )}
 
-          {/* Desk version history (v2026-06-21a) — per-device ring of past loads */}
+          {/* ── Shared desk sync badge ───────────────────────────────────────
+              Shows whether Supabase Realtime is live. Consumers see "LIVE FEED"
+              when connected; admin sees "PUBLISHED" with the publish timestamp. */}
+          {sharedSyncStatus === "live" && sharedPublishedAt && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 10.5,
+              color: isAdmin ? COL.gold : COL.bull,
+              background: isAdmin ? `${COL.gold}14` : `${COL.bull}14`,
+              borderRadius: 8, padding: "4px 9px", border: `1px solid ${isAdmin ? COL.gold : COL.bull}44` }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: isAdmin ? COL.gold : COL.bull,
+                animation: "sb-pulse 2.5s ease-in-out infinite", display: "inline-block" }} />
+              {isAdmin ? "PUBLISHED" : "🌐 LIVE FEED"} · {new Date(sharedPublishedAt).toLocaleTimeString("en-US",
+                { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+            </span>
+          )}
+          {sharedSyncStatus === "syncing" && (
+            <span style={{ fontFamily: mono, fontSize: 10.5, color: COL.faint }}>⟳ syncing desk…</span>
+          )}
+          {sharedSyncStatus === "error" && !isAdmin && (
+            <span style={{ fontFamily: mono, fontSize: 10.5, color: COL.bear }}>⚠ feed unavailable</span>
+          )}
+
+          {/* ── Admin lock toggle ───────────────────────────────────────────
+              Lock icon: locked = consumer mode, unlocked = admin mode.
+              Write key held in sessionStorage only (clears on tab close). */}
+          <button
+            style={{ ...S.btnGhost, padding: "9px 12px", ...(isAdmin ? { borderColor: COL.gold, color: COL.gold } : {}) }}
+            onClick={() => setAdminPanelOpen((o) => !o)}
+            title={isAdmin ? "Admin mode active — click to manage" : "Enter write key to publish the desk"}>
+            {isAdmin ? <Unlock size={14} /> : <Lock size={14} />}
+          </button>
+
+          {/* ── Desk version history button ─────────────────────────────── */}
           <button
             style={{ ...S.btnGhost, padding: "9px 13px", ...(showHistory ? { borderColor: COL.gold, color: COL.gold } : {}) }}
             onClick={() => setShowHistory((s) => !s)}
@@ -4473,8 +4805,7 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
             <History size={14} /> History{deskVersions.length ? ` · ${deskVersions.length}` : ""}
           </button>
 
-          {/* Price status — dot only, no timer text.
-              The price dot tells users whether live prices are streaming. */}
+          {/* Price status dot */}
           <span style={{ display: "flex", alignItems: "center", gap: 5,
             fontFamily: mono, fontSize: 10.5, color: COL.faint }}>
             <span style={{
@@ -4503,6 +4834,60 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
           <Tally label="NO-TRADE" n={counts.notrade} color={COL.faint} />
         </div>
       </div>
+
+      {/* ===== ADMIN PANEL — write key entry (v2026-06-22a) ===== */}
+      {adminPanelOpen && (
+        <div style={{ background: COL.surface1, border: `1px solid ${isAdmin ? COL.gold + "55" : COL.borderSoft}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+          <div style={{ fontFamily: mono, fontSize: 10.5, color: COL.mist, marginBottom: 8, letterSpacing: ".04em" }}>
+            {isAdmin ? "🔓 ADMIN MODE ACTIVE — you are the publisher" : "🔒 ENTER WRITE KEY TO PUBLISH"}
+          </div>
+          {isAdmin ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontFamily: mono, fontSize: 11, color: COL.gold }}>Write key active (session only)</span>
+              {publishStatus && (
+                <span style={{ fontFamily: mono, fontSize: 10.5, color: publishStatus.ok ? COL.bull : COL.bear }}>
+                  {publishStatus.ok
+                    ? `✓ Published ${publishStatus.counts ? `· ${publishStatus.counts.m}M ${publishStatus.counts.s}S ${publishStatus.counts.e}E ${publishStatus.counts.x}X` : ""}`
+                    : `✗ ${publishStatus.error}`}
+                </span>
+              )}
+              <button style={{ ...S.btnGhost, padding: "6px 11px", fontSize: 11 }}
+                onClick={() => {
+                  try { sessionStorage.removeItem("sbcp-wk"); } catch (_) {}
+                  setWriteKey(""); setAdminPanelOpen(false);
+                }}>
+                <Lock size={12} /> Exit admin
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                type="password"
+                value={writeKeyInput}
+                onChange={(e) => setWriteKeyInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && writeKeyInput) {
+                    try { sessionStorage.setItem("sbcp-wk", writeKeyInput); } catch (_) {}
+                    setWriteKey(writeKeyInput); setWriteKeyInput(""); setAdminPanelOpen(false);
+                  }
+                }}
+                placeholder="Write key…"
+                style={{ fontFamily: mono, fontSize: 12, background: COL.surface0, color: COL.text,
+                  border: `1px solid ${COL.borderSoft}`, borderRadius: 8, padding: "7px 11px", outline: "none", width: 200 }}
+              />
+              <button style={{ ...S.btnPrimary, padding: "7px 14px", fontSize: 12 }}
+                onClick={() => {
+                  if (!writeKeyInput) return;
+                  try { sessionStorage.setItem("sbcp-wk", writeKeyInput); } catch (_) {}
+                  setWriteKey(writeKeyInput); setWriteKeyInput(""); setAdminPanelOpen(false);
+                }}>
+                Unlock
+              </button>
+              <span style={{ fontFamily: mono, fontSize: 10, color: COL.faint }}>Key is session-only — clears on tab close</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ===== DESK VERSION HISTORY (v2026-06-21a) ===== */}
       {showHistory && (
@@ -4603,13 +4988,15 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
           </div>
         ) : (
           <div style={stackLayout ? S.emptyStateLg : S.emptyState}>
-            <Upload size={stackLayout ? 28 : 24} color={COL.gold} />
-            <div style={S.emptyStateTitle}>No watchlist loaded on this device</div>
+            {isAdmin ? <Upload size={stackLayout ? 28 : 24} color={COL.gold} /> : <span style={{ fontSize: stackLayout ? 28 : 22 }}>🌐</span>}
+            <div style={S.emptyStateTitle}>
+              {isAdmin ? "No desk loaded yet — upload your CSVs" : "Waiting for the shared desk…"}
+            </div>
             <div style={S.emptyStateBody}>
-              Live prices are streaming for {VAG_ALL_TICKERS.length} V.A.G. tickers.
-              Tap <b>Load V.A.G.</b> above to upload a CSV directly (beta), or wait for the admin-published feed —
-              the graded desk (Σ scores, WITS, Con Score, A+ setups) appears automatically either way.
-              {priceLoading ? " · Fetching prices…" : " · Prices live ✓"}
+              {isAdmin
+                ? `Shift-select all 4 V.A.G. CSVs at once using Load V.A.G. CSVs above. Each file is auto-routed by tier and the graded desk publishes to all connected browsers instantly.${priceLoading ? " · Fetching prices…" : " · Prices live ✓"}`
+                : `Live prices are streaming for ${VAG_ALL_TICKERS.length} V.A.G. tickers. The admin desk will appear here automatically once published — no upload needed.${sharedSyncStatus === "syncing" ? " · Connecting to feed…" : sharedSyncStatus === "error" ? " · Feed unavailable — contact admin." : " · Connected ✓"}`
+              }
             </div>
           </div>
         )
