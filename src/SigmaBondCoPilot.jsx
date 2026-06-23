@@ -2893,22 +2893,109 @@ export default function SigmaBondCoPilot() {
   const tierLoaded = { macro: gMacro.length, sector: gSector.length, stocks: gStocks.length, scans: gScans.length };
   const anyLoaded = tierLoaded.macro || tierLoaded.sector || tierLoaded.stocks || tierLoaded.scans;
 
-  /* Event 2 — A+ setup alert: when the loaded desk contains A+ names, ping
-     Discord once per unique A+ symbol-set (dedup on the sorted symbol list +
-     verdict, so re-grading the same desk won't re-fire, but a new load with
-     different A+ names will). Fires across all four tiers. */
+  /* ── Event 2 — A+ Setup Alert (v2026-06-20k) ──────────────────────────────
+     HIERARCHY: posts three separate batched messages in order:
+       1. ALPHA CANNON  (Macro tier)
+       2. SECTOR GRID   (Sector tier)  → tagged with LONG/SHORT posture
+       3. QUALIFIED PLAYS (Stocks + Scans) → Top-5 only, favored sector tagged
+     Each tier posts independently — if only one tier has A+ names, only that
+     block fires. Dedup per tier on sorted symbol+verdict set so re-grading
+     the same desk never re-fires, but a fresh CSV load with different A+ names
+     will. Options rows are excluded from all tiers. */
   useEffect(() => {
     if (!discordOn || !anyLoaded) return;
-    const all = [...gMacroLive, ...gSectorLive, ...gStocksLive, ...gScansLive].filter((r) => !r.isOptions);
-    const aplus = all.filter((r) => r.verdict === "A+ LONG" || r.verdict === "A+ SHORT");
-    if (!aplus.length) return;
-    const key = "aplus-" + aplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
-    const lines = aplus
-      .sort((a, b) => b.sigma - a.sigma)
-      .slice(0, 15)
-      .map((r) => `${r.verdict === "A+ LONG" ? "🟢" : "🔴"} **${r.symbol}** ${r.verdict} · Σ${r.sigma} · ${r.wits?.label || "—"}`)
-      .join("\n");
-    postDiscord(`🎯 **A+ SETUPS DETECTED** (${aplus.length})\n${lines}`, { dedupKey: key });
+
+    const now = new Date();
+    const dateTag = now.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+    const timeTag = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York" }) + " ET";
+
+    const divider = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬";
+
+    // ── helper: format one A+ row as a trade card line ──
+    const tradeLine = (r, sectorTag) => {
+      const dir   = r.verdict === "A+ LONG" ? "🟢 LONG" : "🔴 SHORT";
+      const wits  = r.wits?.label ? ` · 🏈 ${r.wits.label}` : "";
+      const sigma = `Σ${r.sigma}`;
+      const vol   = r.implvol != null ? ` · IV${Math.round(r.implvol)}%` : "";
+      const ivp   = r.ivp    != null ? `[IVP${r.ivp}]` : "";
+      const con   = r.conScore != null ? ` · Con${r.conScore}` : "";
+      const fit   = sectorTag ? ` ✅ **${sectorTag}**` : "";
+      return `${dir} **${r.symbol}** · ${sigma}${vol}${ivp}${con}${wits}${fit}`;
+    };
+
+    // ── TIER 1: ALPHA CANNON (Macro) ──
+    const macroAplus = gMacroLive.filter((r) => !r.isOptions && (r.verdict === "A+ LONG" || r.verdict === "A+ SHORT"))
+      .sort((a, b) => b.sigma - a.sigma).slice(0, 5);
+    if (macroAplus.length) {
+      const key = "aplus-macro-" + macroAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
+      const lines = macroAplus.map((r) => tradeLine(r, null)).join("\n");
+      const msg = [
+        `🎯 **VAG SIGMA BOND — ALPHA CANNON** | ${dateTag} ${timeTag}`,
+        divider,
+        `**A+ MACRO SETUPS (${macroAplus.length})**`,
+        lines,
+        divider,
+        `_Macro tier · HTF bias confirmed · Trade the directional edge_`,
+      ].join("\n");
+      postDiscord(msg.slice(0, 1990), { dedupKey: key });
+    }
+
+    // ── TIER 2: SECTOR GRID ──
+    const sectorAplus = gSectorLive.filter((r) => !r.isOptions && (r.verdict === "A+ LONG" || r.verdict === "A+ SHORT"))
+      .sort((a, b) => b.sigma - a.sigma).slice(0, 5);
+    if (sectorAplus.length) {
+      const key = "aplus-sector-" + sectorAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
+      const longs  = sectorAplus.filter((r) => r.verdict === "A+ LONG");
+      const shorts = sectorAplus.filter((r) => r.verdict === "A+ SHORT");
+      const lines = sectorAplus.map((r) => tradeLine(r, null)).join("\n");
+      const favLong  = longs.length  ? `🟢 Favored LONG:  ${longs.map((r) => r.symbol).join(" · ")}` : "";
+      const favShort = shorts.length ? `🔴 Favored SHORT: ${shorts.map((r) => r.symbol).join(" · ")}` : "";
+      const msg = [
+        `🎯 **VAG SIGMA BOND — SECTOR GRID** | ${dateTag} ${timeTag}`,
+        divider,
+        `**A+ SECTOR SETUPS (${sectorAplus.length})**`,
+        lines,
+        "",
+        favLong, favShort,
+        divider,
+        `_Sector tier · Funnel stocks into confirmed sector momentum_`,
+      ].filter(Boolean).join("\n");
+      postDiscord(msg.slice(0, 1990), { dedupKey: key });
+    }
+
+    // ── TIER 3: QUALIFIED PLAYS (Stocks + Scans, top-5 A+, sector-tagged) ──
+    const equityAplus = [...gStocksLive, ...gScansLive]
+      .filter((r) => !r.isOptions && (r.verdict === "A+ LONG" || r.verdict === "A+ SHORT"))
+      .sort((a, b) => {
+        // Favored-fit first, then sigma desc
+        const aFit = sectorFitOf(a, favored) ? 1 : 0;
+        const bFit = sectorFitOf(b, favored) ? 1 : 0;
+        if (bFit !== aFit) return bFit - aFit;
+        return b.sigma - a.sigma;
+      })
+      .slice(0, 5);
+    if (equityAplus.length) {
+      const key = "aplus-equity-" + equityAplus.map((r) => `${r.symbol}:${r.verdict}`).sort().join(",");
+      const favLongLabels  = favored?.longs?.map((g)  => g.symbol).join(" · ") || "—";
+      const favShortLabels = favored?.shorts?.map((g) => g.symbol).join(" · ") || "—";
+      const lines = equityAplus.map((r) => {
+        const fit = sectorFitOf(r, favored);
+        const tag = fit === "long" ? "SECTOR-LONG ✅" : fit === "short" ? "SECTOR-SHORT ✅" : null;
+        return tradeLine(r, tag);
+      }).join("\n");
+      const msg = [
+        `🎯 **VAG SIGMA BOND — QUALIFIED PLAYS** | ${dateTag} ${timeTag}`,
+        divider,
+        `**TOP-5 A+ · STOCKS / SCANS**`,
+        lines,
+        "",
+        `📋 Favored sectors → 🟢 ${favLongLabels} · 🔴 ${favShortLabels}`,
+        divider,
+        `_Equity tier · ✅ = sits inside a favored sector · Sort: fit → Σ_`,
+      ].join("\n");
+      postDiscord(msg.slice(0, 1990), { dedupKey: key });
+    }
+
   }, [gMacro, gSector, gStocks, gScans, discordOn]); // eslint-disable-line
 
   /* prev-grade lookup — keyed by symbol — for Rogue Alpha delta badges */
@@ -3531,44 +3618,81 @@ ${template}`;
       try { localStorage.setItem("sbcp-last-tape", snap); } catch (_) {}
       WS.set("sbcp-last-tape", snap, false).catch(() => {});
 
-      /* Discord (Captain Hook) — structured, clean post for Captain Hook channel.
-         Parses the Snapshot Summary and Call to Action into Discord-formatted
-         markdown so channel readers get a decisive read without walls of text.
-         Layout: header → regime line → bias line → plan → call to action.
-         Dedup per ET-day+session. */
-      if (discordOn && text) {
-        const smMatch = text.match(/🎯[^\n]*SNAPSHOT SUMMARY[^\n]*\n([\s\S]*?)(?=\n🔄|\n🚨|\n*$)/i);
-        const ctaMatch = text.match(/🏹[^\n]*CALL TO ACTION[^\n]*\n([\s\S]*?)(?=\n📋|\n---|\n*$)/i);
-        const summary = smMatch ? smMatch[1].trim() : null;
-        const cta = ctaMatch ? ctaMatch[1].trim() : null;
+      /* Discord (Captain Hook) — v2026-06-20k: trade-card-style layout.
+         When the LLM response is available, parses the Snapshot Summary and
+         Call to Action into a structured card. When the API is offline
+         (no Anthropic key), builds a CSV-only snapshot card from loaded data
+         so Discord still gets a meaningful report. */
+      if (discordOn) {
+        const now2 = new Date();
+        const dateTag2 = now2.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+        const timeTag2 = now2.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York" }) + " ET";
+        const divider2 = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬";
+        const sessionLabel = sessionLabels[session].replace(" MACRO", "");
+        const dedupKey2 = `tape-${etDateKey(new Date())}-${session}`;
 
-        if (summary) {
-          // Parse the 5 fixed lines from the Summary block
-          const lines = summary.split("\n").map(l => l.trim()).filter(Boolean);
-          const regime = lines.find(l => l.startsWith("Regime:")) || "";
-          const bias   = lines.find(l => l.startsWith("Bias:"))   || "";
-          const plan   = lines.find(l => l.startsWith("Plan:"))   || "";
-          const watch  = lines.find(l => l.startsWith("Watch:"))  || "";
-          const ts     = lines.find(l => l.startsWith("Updated:")) || "";
+        if (text) {
+          // ── LLM response available — parse structured card ──
+          const smMatch = text.match(/🎯[^\n]*SNAPSHOT SUMMARY[^\n]*\n([\s\S]*?)(?=\n🔄|\n🚨|\n*$)/i);
+          const ctaMatch = text.match(/🏹[^\n]*CALL TO ACTION[^\n]*\n([\s\S]*?)(?=\n📋|\n---|\n*$)/i);
+          const summary = smMatch ? smMatch[1].trim() : null;
+          const cta = ctaMatch ? ctaMatch[1].trim() : null;
 
-          // Discord Markdown: bold labels, clean layout
-          const parts = [
-            `🏈 **${sessionLabels[session].replace(" MACRO","")} FIELD REPORT — VIGILANT ALPHA GROUP**`,
-            `━━━━━━━━━━━━━━━━━━━━━━`,
-            regime ? `📡 **${regime}**` : "",
-            bias   ? (bias.includes("NO EDGE") ? `⚪ ${bias}` : bias.toLowerCase().includes("short") ? `🔴 ${bias}` : `🟢 ${bias}`) : "",
-            plan   ? `🎯 ${plan}` : "",
-            watch  ? `👀 ${watch}` : "",
-          ].filter(Boolean).join("\n");
+          if (summary) {
+            const lines2 = summary.split("\n").map(l => l.trim()).filter(Boolean);
+            const regime2 = lines2.find(l => l.startsWith("Regime:")) || "";
+            const bias2   = lines2.find(l => l.startsWith("Bias:"))   || "";
+            const plan2   = lines2.find(l => l.startsWith("Plan:"))   || "";
+            const watch2  = lines2.find(l => l.startsWith("Watch:"))  || "";
+            const ts2     = lines2.find(l => l.startsWith("Updated:")) || "";
 
-          const ctaPart = cta ? `\n━━━━━━━━━━━━━━━━━━━━━━\n🏹 **CALL TO ACTION**\n${cta.split("\n").map(l => l.trim()).filter(Boolean).join("\n")}` : "";
+            const biasFmt = bias2.includes("NO EDGE") ? `⚪ ${bias2}` : bias2.toLowerCase().includes("short") ? `🔴 ${bias2}` : bias2 ? `🟢 ${bias2}` : "";
 
-          const footer = ts ? `\n*${ts}*` : "";
+            const ctaLines = cta ? cta.split("\n").map(l => l.trim()).filter(Boolean) : [];
 
-          postDiscord(
-            (parts + ctaPart + footer).slice(0, 1990),
-            { dedupKey: `tape-${etDateKey(new Date())}-${session}` }
-          );
+            const msg = [
+              `🏈 **VAG SIGMA BOND · ${sessionLabel} FIELD REPORT** | ${dateTag2} ${timeTag2}`,
+              divider2,
+              regime2 ? `📡 **${regime2}**` : "",
+              biasFmt,
+              plan2   ? `🎯 ${plan2}` : "",
+              watch2  ? `👀 ${watch2}` : "",
+              ctaLines.length ? divider2 : "",
+              ctaLines.length ? `🏹 **CALL TO ACTION**` : "",
+              ...ctaLines.map(l => `  ${l}`),
+              ts2 ? divider2 : "",
+              ts2 ? `_${ts2}_` : "",
+            ].filter(Boolean).join("\n");
+
+            postDiscord(msg.slice(0, 1990), { dedupKey: dedupKey2 });
+          }
+        } else {
+          // ── No LLM (API offline / no key) — CSV-only snapshot ──
+          const allRows = [...gMacroLive, ...gSectorLive, ...gStocksLive, ...gScansLive].filter((r) => !r.isOptions);
+          const aplusLong  = allRows.filter((r) => r.verdict === "A+ LONG").sort((a,b) => b.sigma - a.sigma).slice(0, 3);
+          const aplusShort = allRows.filter((r) => r.verdict === "A+ SHORT").sort((a,b) => b.sigma - a.sigma).slice(0, 3);
+
+          const favLongs  = favored?.longs?.map((g)  => `${g.symbol}(Σ${g.sigma})`).join(" · ") || "—";
+          const favShorts = favored?.shorts?.map((g) => `${g.symbol}(Σ${g.sigma})`).join(" · ") || "—";
+
+          const longLines  = aplusLong.map((r)  => `  🟢 **${r.symbol}** Σ${r.sigma} · ${r.wits?.label || "—"}`).join("\n");
+          const shortLines = aplusShort.map((r) => `  🔴 **${r.symbol}** Σ${r.sigma} · ${r.wits?.label || "—"}`).join("\n");
+
+          const msg = [
+            `🏈 **VAG SIGMA BOND · ${sessionLabel} SNAPSHOT** | ${dateTag2} ${timeTag2}`,
+            `_(CSV-only · LLM offline)_`,
+            divider2,
+            aplusLong.length  ? `**A+ LONG SETUPS**\n${longLines}`  : "No A+ LONG setups loaded",
+            aplusShort.length ? `**A+ SHORT SETUPS**\n${shortLines}` : "No A+ SHORT setups loaded",
+            divider2,
+            `📋 Favored sectors`,
+            `  🟢 ${favLongs}`,
+            `  🔴 ${favShorts}`,
+            divider2,
+            `_Load all CSV tiers for full Sigma Bond analysis_`,
+          ].join("\n");
+
+          postDiscord(msg.slice(0, 1990), { dedupKey: dedupKey2 });
         }
       }
     }
