@@ -51,7 +51,7 @@ GITHUB_USER = "vigilantalphagroup"
 # Your GitHub Personal Access Token (classic, repo scope).
 # ⚠️  PASTE YOUR TOKEN HERE after generating it at: https://github.com/settings/tokens
 # Needs: repo (full control of private repositories)
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = "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"
 
 # Branch to push to (leave as main)
 GIT_BRANCH = "main"
