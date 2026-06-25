@@ -37,24 +37,21 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ── CONFIG — edit these 5 values ─────────────────────────────────────────────
+# ── CONFIG ────────────────────────────────────────────────────────────────────
 
 # Folder where ThinkorSwim saves its CSV exports.
-# Right-click your TOS export shortcut → Properties to find the folder.
-# Example:  r"C:\Users\Evan\Documents\ThinkorSwim\Exports"
-WATCH_DIR = r"C:\Users\YourName\Documents\ThinkorSwim\Exports"
+WATCH_DIR = r"C:\Users\User\Documents\GitHub\Mobile-VAG\TOS CSV"
 
 # Full path to your local clone of the Mobile-VAG repo.
-# Example:  r"C:\Users\Evan\Documents\GitHub\Mobile-VAG"
-REPO_DIR = r"C:\Users\YourName\Documents\GitHub\Mobile-VAG"
+REPO_DIR = r"C:\Users\User\Documents\GitHub\Mobile-VAG"
 
-# Your GitHub username
-GITHUB_USER = "your-github-username"
+# GitHub organization / username that owns the repo
+GITHUB_USER = "vigilantalphagroup"
 
 # Your GitHub Personal Access Token (classic, repo scope).
-# Create one at: https://github.com/settings/tokens
+# ⚠️  PASTE YOUR TOKEN HERE after generating it at: https://github.com/settings/tokens
 # Needs: repo (full control of private repositories)
-GITHUB_TOKEN = "ghp_yourTokenHere"
+GITHUB_TOKEN = "PASTE_YOUR_TOKEN_HERE"
 
 # Branch to push to (leave as main)
 GIT_BRANCH = "main"
