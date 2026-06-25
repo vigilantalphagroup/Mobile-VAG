@@ -2262,20 +2262,10 @@ const WS = {
 
 /* ── Claude API endpoint router (v2026-06-20k) ──────────────────────────────
    In the claude.ai artifact sandbox the app runs on claudeusercontent.com,
-   where direct POSTs to api.anthropic.com are CORS-whitelisted (the key is
-   injected by the platform). On a real deployed host (Netlify, etc.) those
-   direct calls are CORS-blocked, so every request must route through the
-   serverless proxy at /api/claude, which attaches ANTHROPIC_API_KEY
-   server-side and forwards to api.anthropic.com.
-   REQUIRED: netlify.toml must redirect  /api/claude  ->
-   /.netlify/functions/claude-proxy  (200 rewrite, not 301), and the proxy
-   must stream responses through when the request body has stream:true. */
-const IN_CLAUDE_SANDBOX =
-  typeof window !== "undefined" &&
-  /(^|\.)claudeusercontent\.com$|(^|\.)claude\.ai$/.test(window.location.hostname);
-const CLAUDE_API_URL = IN_CLAUDE_SANDBOX
-  ? "https://api.anthropic.com/v1/messages"
-  : "/api/claude";
+   All AI calls (Roll the Tape, Chart Analysis, Calendar) route through
+   /api/gemini → netlify/functions/gemini-proxy.js → Google Gemini 2.0 Flash.
+   The proxy reads SIGMABOND_API from Netlify env vars and forwards to the
+   Gemini generateContent / streamGenerateContent endpoints. */
 
 /* Embedded assets — base64-encoded so the artifact is fully self-contained
    with no external image dependencies. */
@@ -3067,6 +3057,7 @@ export default function SigmaBondCoPilot() {
             merged = { ...merged, [tier]: parseCSV(text) };
           }
           merged._savedAt = manifest.exportedAt;
+          captureTriggerRef.current = "auto"; // suppress Discord A+ alert on silent auto-load
           try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
           WS.set("sbcp-datasets", JSON.stringify(merged), false).catch(() => {});
           return merged;
@@ -3277,7 +3268,8 @@ export default function SigmaBondCoPilot() {
      the same desk never re-fires, but a fresh CSV load with different A+ names
      will. Options rows are excluded from all tiers. */
   useEffect(() => {
-    if (!discordOn || !anyLoaded) return;
+    // Never fire Discord on the silent background auto-load from /data/tos-exports/
+    if (!discordOn || !anyLoaded || captureTriggerRef.current === "auto") return;
 
     const now = new Date();
     const dateTag = now.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
@@ -4771,22 +4763,6 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
       {/* ===== DATA BAR ===== */}
       <div style={{ ...S.dataBar, flexWrap: "wrap", rowGap: 8 }}>
         <div style={{ ...S.dataLeft, flexWrap: "wrap" }}>
-          {/* ── Admin-only: multi-file batch upload ──────────────────────────
-              Consumers (no write key) see NO upload control — their desk
-              arrives automatically via the Supabase Realtime subscription.
-              Admin sees a single file picker that accepts 1-4 CSVs at once;
-              sniffTier routes each, all merge atomically, then auto-publishes. */}
-          {isAdmin && (
-            <>
-              <label htmlFor="sb-csv-input" style={{ ...S.btnPrimary, cursor: "pointer" }}
-                title="Batch: shift-select up to 4 CSVs at once — each auto-routed by tier and published instantly.">
-                <Upload size={14} /> Load V.A.G. CSVs
-              </label>
-              <input id="sb-csv-input" type="file" accept=".csv,.txt" multiple
-                style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
-                onChange={loadFiles} />
-            </>
-          )}
 
           {/* ── Shared desk sync badge ───────────────────────────────────────
               Shows whether Supabase Realtime is live. Consumers see "LIVE FEED"
@@ -4819,13 +4795,6 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
             {isAdmin ? <Unlock size={14} /> : <Lock size={14} />}
           </button>
 
-          {/* ── Desk version history button ─────────────────────────────── */}
-          <button
-            style={{ ...S.btnGhost, padding: "9px 13px", ...(showHistory ? { borderColor: COL.gold, color: COL.gold } : {}) }}
-            onClick={() => setShowHistory((s) => !s)}
-            title="Desk version history — restore or pin a past load (saved on this device)">
-            <History size={14} /> History{deskVersions.length ? ` · ${deskVersions.length}` : ""}
-          </button>
 
           {/* Price status dot */}
           <span style={{ display: "flex", alignItems: "center", gap: 5,
@@ -4911,61 +4880,6 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
         </div>
       )}
 
-      {/* ===== DESK VERSION HISTORY (v2026-06-21a) ===== */}
-      {showHistory && (
-        <div style={{ background: COL.surface1, border: `1px solid ${COL.borderSoft}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            <div style={{ fontFamily: mono, fontSize: 10.5, color: COL.mist, letterSpacing: ".04em" }}>
-              DESK HISTORY · this device · last {RING_MAX} loads + pins
-            </div>
-            <button style={{ ...S.btnGhost, padding: "6px 11px", fontSize: 11, opacity: anyLoaded ? 1 : 0.5, cursor: anyLoaded ? "pointer" : "not-allowed" }}
-              onClick={pinCurrentDesk} disabled={!anyLoaded}
-              title="Pin the current desk as a permanent checkpoint (never auto-evicted)">
-              <Pin size={13} /> Pin current desk
-            </button>
-          </div>
-          {deskVersions.length === 0 ? (
-            <div style={{ fontFamily: mono, fontSize: 10.5, color: COL.faint, padding: "8px 2px" }}>
-              No saved versions yet. Each desk load is captured automatically a few seconds after you ingest it.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {deskVersions.map((v) => {
-                const isCurrent = (datasets._restoredFrom && datasets._restoredFrom === v.id)
-                  || (!!datasets._savedAt && datasets._savedAt === v.savedAt);
-                return (
-                  <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-                    background: COL.surface0, border: `1px solid ${v.pinned ? COL.gold + "55" : COL.borderSoft}`, borderRadius: 9, padding: "8px 10px" }}>
-                    <span onClick={() => togglePinVersion(v.id)}
-                      title={v.pinned ? "Pinned — never auto-evicted. Click to unpin." : "Pin this version"}
-                      style={{ cursor: "pointer", display: "inline-flex", color: v.pinned ? COL.gold : COL.faint }}>
-                      <Pin size={13} fill={v.pinned ? COL.gold : "none"} />
-                    </span>
-                    <div style={{ flex: 1, minWidth: 150 }}>
-                      <div style={{ fontFamily: body, fontSize: 12, color: COL.text }}>
-                        {v.label}
-                        {isCurrent && <span style={{ color: COL.bull, marginLeft: 6, fontSize: 9.5, fontFamily: mono }}>● current</span>}
-                      </div>
-                      <div style={{ fontFamily: mono, fontSize: 9.5, color: COL.faint, marginTop: 2 }}>
-                        {v.counts.m}M · {v.counts.s}S · {v.counts.e}E · {v.counts.x}X
-                      </div>
-                    </div>
-                    <button style={{ ...S.btnGhost, padding: "5px 10px", fontSize: 11 }}
-                      onClick={() => restoreVersion(v.id)}
-                      title="Load this desk back in (the current desk is auto-saved first)">
-                      <RotateCcw size={12} /> Restore
-                    </button>
-                    <span onClick={() => { if (window.confirm("Delete this saved version? This can't be undone.")) deleteVersion(v.id); }}
-                      title="Delete this version" style={{ cursor: "pointer", color: COL.faint, display: "inline-flex", padding: 4 }}>
-                      <Trash2 size={13} />
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ===== EMPTY STATE / PRICE-ONLY BOARD ===== */}
       {!anyLoaded && (
