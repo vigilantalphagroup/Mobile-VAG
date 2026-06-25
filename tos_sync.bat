@@ -6,13 +6,13 @@ echo   Vigilant Alpha Group -- TOS Auto-Sync
 echo  ==========================================
 echo.
 
-:: Find Python — try PATH first, then the known install location
+:: Prefer the known full-path Python (where packages are installed) over PATH
 set PYTHON=
-where python >nul 2>&1 && set PYTHON=python
+if exist "C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe" (
+    set PYTHON=C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe
+)
 if "%PYTHON%"=="" (
-    if exist "C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe" (
-        set PYTHON=C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe
-    )
+    where python >nul 2>&1 && set PYTHON=python
 )
 if "%PYTHON%"=="" (
     echo  ERROR: Python not found.
