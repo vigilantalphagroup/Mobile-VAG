@@ -3970,6 +3970,10 @@ export default function SigmaBondCoPilot() {
         method: "POST", headers, body: JSON.stringify(geminiBody),
       });
       if (!res.ok || !res.body) {
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.includes("application/json")) {
+          throw new Error("Gemini function not reachable — make sure the branch is merged and GEMINI_API_KEY is set in Netlify.");
+        }
         const errData = await res.json().catch(() => ({}));
         throw new Error(`Gemini API error: ${errData?.error?.message || res.status}`);
       }
@@ -4003,7 +4007,12 @@ export default function SigmaBondCoPilot() {
     const res = await fetch("/api/gemini", {
       method: "POST", headers, body: JSON.stringify(geminiBody),
     });
-    const data = await res.json();
+    // Guard: if the response is HTML (function not deployed / 404) give a clean error
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("Gemini function not reachable — make sure the branch is merged and GEMINI_API_KEY is set in Netlify.");
+    }
+    const data = await res.json().catch(() => { throw new Error(`Gemini returned an unreadable response (HTTP ${res.status})`); });
     if (data.error) throw new Error(`Gemini API error: ${data.error.message || JSON.stringify(data.error)}`);
     const text = (data.candidates?.[0]?.content?.parts || [])
       .map((p) => p.text || "").filter(Boolean).join("\n");
