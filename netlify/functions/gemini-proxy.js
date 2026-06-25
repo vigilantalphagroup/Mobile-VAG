@@ -1,37 +1,20 @@
 /**
  * Server-side proxy for the Google Gemini API.
  *
- * WHY THIS EXISTS:
- * Browsers cannot call https://generativelanguage.googleapis.com directly
- * without exposing the API key in client code. This function runs server-side,
- * injects GEMINI_API_KEY from Netlify environment variables, and proxies
- * requests through to the Gemini API.
- *
  * ENVIRONMENT VARIABLE REQUIRED:
  *   GEMINI_API_KEY — set in Netlify → Site settings → Environment variables.
  *
  * SUPPORTED MODELS (pass in request body as "model"):
- *   gemini-2.0-flash          — fast, low cost (default if omitted)
- *   gemini-2.5-pro             — highest capability
+ *   gemini-2.0-flash   — fast, free tier (default)
+ *   gemini-2.5-pro     — highest capability
  *
  * REQUEST (POST /api/gemini):
- *   { model?, contents, generationConfig?, systemInstruction? }
- *   — "contents" follows the Gemini generateContent schema.
+ *   Body: { model?, contents, generationConfig?, systemInstruction?, tools? }
+ *   Query: ?stream=true  — enables SSE streaming via streamGenerateContent
  *
  * RESPONSE:
- *   Pass-through from Gemini API — { candidates, usageMetadata, ... }
- *
- * USAGE FROM CLIENT:
- *   const res = await fetch('/api/gemini', {
- *     method: 'POST',
- *     headers: { 'Content-Type': 'application/json' },
- *     body: JSON.stringify({
- *       model: 'gemini-2.0-flash',
- *       contents: [{ role: 'user', parts: [{ text: 'Your prompt' }] }]
- *     })
- *   });
- *   const data = await res.json();
- *   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+ *   Non-streaming: { candidates, usageMetadata, ... }  (JSON)
+ *   Streaming:     SSE stream, each line: data: { candidates: [...] }
  */
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -62,22 +45,37 @@ export default async function handler(req, _context) {
     });
   }
 
+  const url = new URL(req.url);
+  const wantStream = url.searchParams.get("stream") === "true";
   const model = body.model || "gemini-2.0-flash";
-  // Strip the model field before forwarding — it goes in the URL, not the body
   const { model: _m, ...forwardBody } = body;
 
-  const geminiUrl = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
+  const endpoint = wantStream ? "streamGenerateContent" : "generateContent";
+  const geminiUrl = wantStream
+    ? `${GEMINI_BASE}/${model}:${endpoint}?alt=sse&key=${apiKey}`
+    : `${GEMINI_BASE}/${model}:${endpoint}?key=${apiKey}`;
 
   try {
     const upstream = await fetch(geminiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(forwardBody),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(60000), // chart analysis can take time
     });
 
-    const data = await upstream.json();
+    if (wantStream) {
+      // Pass the SSE stream straight through to the browser
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-store",
+          "X-Accel-Buffering": "no", // disable proxy buffering on Netlify Edge
+        },
+      });
+    }
 
+    const data = await upstream.json();
     return new Response(JSON.stringify(data), {
       status: upstream.status,
       headers: {
