@@ -74,7 +74,7 @@ export default async function handler(req, _context) {
   }
 
   // ── 2. Alpha Vantage fallback (requires ALPHA_VANTAGE_KEY) ───────────────
-  const avKey = process.env.ALPHA_VANTAGE_KEY;
+  const avKey = process.env.ALPHA_VANTAGE_KEY || process.env.AV_API_KEY;
   if (avKey) {
     // Free tier: 5 calls/min, 25/day. Cap at 5 symbols to stay safe.
     const avSymbols = symList.filter((s) => !s.includes("=")).slice(0, 5);

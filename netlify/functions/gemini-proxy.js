@@ -27,10 +27,10 @@ export default async function handler(req, _context) {
     });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.SIGMABOND_API || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return new Response(
-      JSON.stringify({ error: "GEMINI_API_KEY not configured in Netlify environment variables." }),
+      JSON.stringify({ error: "SIGMABOND_API (or GEMINI_API_KEY) not configured in Netlify environment variables." }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
