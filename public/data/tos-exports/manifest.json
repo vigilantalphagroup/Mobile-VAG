@@ -1,0 +1,5 @@
+{
+  "exportedAt": "2026-06-24T09:28:37.000Z",
+  "files": ["Futures.csv", "Sector_Symbols.csv", "Top_5.csv", "Scans.csv"],
+  "note": "Update exportedAt to the current time each time you replace these CSV files. The app treats data older than 15 minutes as stale and overlays live prices automatically."
+}

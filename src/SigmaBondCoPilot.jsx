@@ -2375,37 +2375,64 @@ function toYahooSym(ticker) {
   return t; // equities / ETFs pass through
 }
 
+/* True on Netlify deploy; false on localhost. Used to route price fetches
+   through /api/prices (server-side, no CORS) instead of the allorigins proxy. */
+const IS_NETLIFY = typeof window !== "undefined" &&
+  !["localhost", "127.0.0.1"].includes(window.location.hostname);
+
 async function fetchLivePrices(symbols) {
   const filtered = symbols.map(toYahooSym).filter(Boolean);
   if (!filtered.length) return;
-  // Batch into chunks of 10 (allorigins has URL length limits)
+  // Batch into chunks of 10 (URL length / rate-limit constraints)
   const chunks = [];
   for (let i = 0; i < filtered.length; i += 10) chunks.push(filtered.slice(i, i + 10));
+
   for (const chunk of chunks) {
-    const syms = chunk.join("%2C"); // comma-encoded
-    const url = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${syms}&range=1d&interval=1d`;
-    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    try {
-      const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const wrapper = await res.json();
-      const data = JSON.parse(wrapper.contents);
-      const results = data?.spark?.result || [];
-      for (const r of results) {
-        const raw = r?.symbol;
-        if (!raw) continue;
-        const resp = r?.response?.[0];
-        const closes = resp?.indicators?.quote?.[0]?.close || [];
-        const meta   = resp?.meta || {};
-        if (!closes.length) continue;
-        const price  = Number((meta.regularMarketPrice || closes[closes.length - 1]).toFixed(2));
-        const prev   = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2];
-        const pct    = prev ? Number(((price - prev) / prev * 100).toFixed(2)) : 0;
-        const open   = meta.regularMarketOpen || meta.chartPreviousClose || price;
-        const pctO   = open ? Number(((price - open) / open * 100).toFixed(2)) : 0;
-        PRICE_CACHE.set(raw.toUpperCase(), { price, pct, pctOpen: pctO, ts: Date.now(), source: "yahoo" });
-      }
-    } catch (_) { /* proxy blocked or timed out — skip this chunk */ }
+    let fetched = false;
+
+    // ── Path A: server-side proxy (Netlify deploy — Yahoo + AV fallback) ──
+    if (IS_NETLIFY) {
+      try {
+        const res = await fetch(`/api/prices?symbols=${chunk.join(",")}`,
+          { signal: AbortSignal.timeout(8000) });
+        if (res.ok) {
+          const data = await res.json();
+          for (const q of (data.quotes || [])) {
+            PRICE_CACHE.set(q.symbol.toUpperCase(),
+              { price: q.price, pct: q.pct, pctOpen: q.pctOpen, ts: Date.now(), source: q.source || "server" });
+          }
+          fetched = true;
+        }
+      } catch (_) { /* server unavailable — fall through to allorigins */ }
+    }
+
+    // ── Path B: allorigins CORS proxy (local dev or server fallback) ──
+    if (!fetched) {
+      const syms = chunk.join("%2C");
+      const url = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${syms}&range=1d&interval=1d`;
+      const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+      try {
+        const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) continue;
+        const wrapper = await res.json();
+        const data = JSON.parse(wrapper.contents);
+        const results = data?.spark?.result || [];
+        for (const r of results) {
+          const raw = r?.symbol;
+          if (!raw) continue;
+          const resp = r?.response?.[0];
+          const closes = resp?.indicators?.quote?.[0]?.close || [];
+          const meta   = resp?.meta || {};
+          if (!closes.length) continue;
+          const price  = Number((meta.regularMarketPrice || closes[closes.length - 1]).toFixed(2));
+          const prev   = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2];
+          const pct    = prev ? Number(((price - prev) / prev * 100).toFixed(2)) : 0;
+          const open   = meta.regularMarketOpen || meta.chartPreviousClose || price;
+          const pctO   = open ? Number(((price - open) / open * 100).toFixed(2)) : 0;
+          PRICE_CACHE.set(raw.toUpperCase(), { price, pct, pctOpen: pctO, ts: Date.now(), source: "yahoo" });
+        }
+      } catch (_) { /* proxy blocked or timed out — skip this chunk */ }
+    }
   }
 }
 
@@ -2990,7 +3017,68 @@ export default function SigmaBondCoPilot() {
     refreshPrices(true);
     const id = setInterval(() => refreshPrices(false), 15 * 60 * 1000); // 15 min auto-refresh
     return () => clearInterval(id);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Auto-load TOS CSV exports from /data/tos-exports/ ──────────────────────
+     On every fresh page load the app fetches the manifest to read exportedAt.
+
+     Rules:
+     • If localStorage already has data with a NEWER _savedAt than the manifest,
+       skip — the user's manual upload takes priority.
+     • If the manifest is ≤15 min old: load CSVs silently (TOS columns intact,
+       prices are recent enough to trust from the file).
+     • If the manifest is >15 min old: load CSVs (to preserve the custom TOS
+       columns), then immediately fire a live price refresh so the Mark column
+       is overlaid with fresh prices. */
+  const TOS_STALE_MS = 15 * 60 * 1000;
+  useEffect(() => {
+    (async () => {
+      try {
+        const manifest = await fetch("/data/tos-exports/manifest.json", { cache: "no-cache" })
+          .then((r) => (r.ok ? r.json() : null));
+        if (!manifest?.exportedAt) return;
+
+        // Don't clobber a newer manual upload already in localStorage
+        try {
+          const localRaw = localStorage.getItem("sbcp-datasets-local");
+          if (localRaw) {
+            const local = JSON.parse(localRaw);
+            if (local._savedAt && new Date(local._savedAt) >= new Date(manifest.exportedAt)) return;
+          }
+        } catch (_) {}
+
+        const csvAge = Date.now() - new Date(manifest.exportedAt).getTime();
+
+        const [futuresText, sectorText, topText, scansText] = await Promise.all(
+          ["Futures.csv", "Sector_Symbols.csv", "Top_5.csv", "Scans.csv"].map((f) =>
+            fetch(`/data/tos-exports/${f}`, { cache: "no-cache" })
+              .then((r) => (r.ok ? r.text() : null))
+              .catch(() => null)
+          )
+        );
+
+        const texts = [futuresText, sectorText, topText, scansText].filter(Boolean);
+        if (!texts.length) return;
+
+        setDatasets((d) => {
+          let merged = { ...d };
+          for (const text of texts) {
+            const tier = sniffTier(text);
+            merged = { ...merged, [tier]: parseCSV(text) };
+          }
+          merged._savedAt = manifest.exportedAt;
+          try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
+          WS.set("sbcp-datasets", JSON.stringify(merged), false).catch(() => {});
+          return merged;
+        });
+        setStoredAt(manifest.exportedAt);
+        setActiveTier("stocks");
+
+        // Overlay live prices if the TOS export is stale
+        if (csvAge > TOS_STALE_MS) refreshPrices(true);
+      } catch (_) { /* /data/tos-exports not present — silent, user can upload manually */ }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* grade each tier */
   const gMacro = useMemo(() => gradeDataset(datasets.macro), [datasets.macro]);
@@ -3799,15 +3887,17 @@ export default function SigmaBondCoPilot() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(CLAUDE_API_URL, {
+        // Probe Gemini proxy — a 400/401/200 all mean the endpoint is reachable
+        const r = await fetch("/api/gemini", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1,
-            messages: [{ role: "user", content: "ping" }] }),
+          body: JSON.stringify({
+            model: "gemini-2.0-flash",
+            contents: [{ role: "user", parts: [{ text: "ping" }] }],
+            generationConfig: { maxOutputTokens: 1 },
+          }),
           signal: AbortSignal.timeout(4000),
         });
-        // A 401/400 means the endpoint is reachable (CORS passed). A CORS
-        // error throws and we catch below.
         const ok = r.status !== 0;
         setApiAvailable(ok);
       } catch (_) {
@@ -3816,7 +3906,15 @@ export default function SigmaBondCoPilot() {
     })();
   }, []);
 
-  async function callClaude({ system, userContent, tools, maxTokens = 1200,
+  /* ── callGemini: drop-in AI helper using Google Gemini via /api/gemini ──
+     Accepts the same call signature as the former callClaude() so all
+     call sites (rollTape, analyzeChart, fetchCalendar) require no changes
+     other than the function name.
+     - Converts Claude message/content format → Gemini contents/parts format
+     - Converts Claude image blocks (source.data) → Gemini inlineData blocks
+     - Replaces web_search_20250305 tool → Gemini's googleSearch grounding
+     - Supports SSE streaming via ?stream=true on the proxy endpoint        */
+  async function callGemini({ system, userContent, tools, maxTokens = 1200,
                                cacheKey = null, force = false, onStream = null }) {
     // Serve from cache if fresh and not forced
     if (cacheKey && !force) {
@@ -3825,12 +3923,32 @@ export default function SigmaBondCoPilot() {
         return { text: hit.text, cached: true, age: cacheAgeStr(hit.ts) };
       }
     }
-    // Stale-cache fallback when API is known-unavailable (public artifact context)
+    // Stale-cache fallback when API is known-unavailable
     if (apiAvailable === false) {
       const stale = cacheKey ? SEARCH_CACHE.get(cacheKey) : null;
       if (stale) return { text: stale.text, cached: true, stale: true, age: cacheAgeStr(stale.ts), offline: true };
       throw new Error("OFFLINE_MODE");
     }
+
+    // Convert Claude-style content array → Gemini parts array
+    function toGeminiParts(content) {
+      if (typeof content === "string") return [{ text: content }];
+      if (!Array.isArray(content)) return [{ text: String(content) }];
+      return content.map((block) => {
+        if (block.type === "text")  return { text: block.text };
+        if (block.type === "image") return { inlineData: { mimeType: block.source.media_type, data: block.source.data } };
+        return { text: "" };
+      }).filter((p) => p.text !== "" || p.inlineData);
+    }
+
+    const geminiBody = {
+      contents: [{ role: "user", parts: toGeminiParts(userContent) }],
+      generationConfig: { maxOutputTokens: maxTokens },
+    };
+    if (system) geminiBody.systemInstruction = { parts: [{ text: system }] };
+    // Any tools → enable Gemini's built-in Google Search grounding
+    if (tools?.length) geminiBody.tools = [{ googleSearch: {} }];
+
     const headers = { "Content-Type": "application/json" };
 
     /* ── Streaming path, no tools (single-turn) ──
@@ -3843,18 +3961,17 @@ export default function SigmaBondCoPilot() {
        analysis) still feel fast even though the search turns themselves
        can't stream. This cuts perceived latency from the full TTFB
        (~15-30s) down to < 2s before the first visible token. */
-    if (onStream && !tools) {
-      const body = { model: "claude-sonnet-4-6", max_tokens: maxTokens,
-        messages: [{ role: "user", content: userContent }], stream: true };
-      if (system) body.system = system;
-      const res = await fetch(CLAUDE_API_URL, {
-        method: "POST", headers, body: JSON.stringify(body),
+    /* ── Streaming path ──
+       Gemini handles googleSearch grounding internally — no multi-turn tool
+       loops required. We always stream when onStream is provided, regardless
+       of whether tools (grounding) are also requested. */
+    if (onStream) {
+      const res = await fetch("/api/gemini?stream=true", {
+        method: "POST", headers, body: JSON.stringify(geminiBody),
       });
       if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        const rl = detectRateLimit(data);
-        if (rl.limited) throw new Error(`Search limit reached — resets ${fmtResetTime(rl.resetsAt)} ET.`);
-        throw new Error(`API error: ${data?.error?.message || res.status}`);
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(`Gemini API error: ${errData?.error?.message || res.status}`);
       }
       let accumulated = "";
       const reader = res.body.getReader();
@@ -3868,13 +3985,12 @@ export default function SigmaBondCoPilot() {
         for (const line of chunk.split("\n")) {
           if (!line.startsWith("data: ")) continue;
           const payload = line.slice(6).trim();
-          if (payload === "[DONE]") continue;
+          if (!payload || payload === "[DONE]") continue;
           try {
             const evt = JSON.parse(payload);
-            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-              accumulated += evt.delta.text;
-              onStream(accumulated); // update UI incrementally
-            }
+            const delta = evt.candidates?.[0]?.content?.parts
+              ?.map((p) => p.text || "").join("") || "";
+            if (delta) { accumulated += delta; onStream(accumulated); }
           } catch (_) {}
         }
       }
@@ -3883,117 +3999,14 @@ export default function SigmaBondCoPilot() {
       return { text: accumulated, cached: false };
     }
 
-    /* ── Tool-use path (multi-turn) ──
-       Tool calls themselves can't stream (need the full JSON to extract
-       tool_use blocks), so turns that result in stop_reason "tool_use" are
-       fetched normally. But once the model is done calling tools and is
-       about to produce its final answer (stop_reason will be "end_turn"),
-       we re-issue that LAST turn with stream:true if the caller passed
-       onStream — so a chart that needs 1-2 web searches still streams its
-       Trade Card instead of going silent for the full round-trip. */
-    let messages = [{ role: "user", content: userContent }];
-    let lastData = null;
-    for (let turn = 0; turn < 4; turn++) {
-      const isLikelyFinalTurn = turn > 0; // first turn always non-streaming to learn if tools are needed
-      const wantStream = onStream && tools && isLikelyFinalTurn;
-      const body = { model: "claude-sonnet-4-6", max_tokens: maxTokens, messages };
-      if (system) body.system = system;
-      if (tools) body.tools = tools;
-      if (wantStream) body.stream = true;
-
-      const res = await fetch(CLAUDE_API_URL, {
-        method: "POST", headers, body: JSON.stringify(body),
-      });
-
-      if (wantStream) {
-        if (!res.ok || !res.body) {
-          // Streamed attempt failed — fall back to a normal non-streaming call for this turn
-          const data2 = await fetch(CLAUDE_API_URL, {
-            method: "POST", headers, body: JSON.stringify({ ...body, stream: false }),
-          }).then((r) => r.json());
-          lastData = data2;
-          if (data2.stop_reason === "tool_use") {
-            const toolBlocks = (data2.content || []).filter((b) => b.type === "tool_use");
-            if (toolBlocks.length) {
-              messages.push({ role: "assistant", content: data2.content });
-              messages.push({ role: "user", content: toolBlocks.map((b) => ({ type: "tool_result", tool_use_id: b.id, content: b.output || "Tool executed." })) });
-              continue;
-            }
-          }
-          break;
-        }
-        // Stream this turn — accumulate text and stop_reason; tool_use blocks
-        // can also arrive via streaming deltas, so track them too.
-        let accumulated = "", stopReason = null;
-        const streamToolBlocks = [];
-        let curToolBlock = null;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let done = false;
-        while (!done) {
-          const { value, done: d } = await reader.read();
-          done = d;
-          if (!value) continue;
-          const chunk = decoder.decode(value, { stream: true });
-          for (const line of chunk.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (payload === "[DONE]") continue;
-            try {
-              const evt = JSON.parse(payload);
-              if (evt.type === "content_block_start" && evt.content_block?.type === "tool_use") {
-                curToolBlock = { type: "tool_use", id: evt.content_block.id, name: evt.content_block.name, input: "" };
-              } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-                accumulated += evt.delta.text;
-                onStream(accumulated);
-              } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && curToolBlock) {
-                curToolBlock.input += evt.delta.partial_json || "";
-              } else if (evt.type === "content_block_stop" && curToolBlock) {
-                try { curToolBlock.input = JSON.parse(curToolBlock.input || "{}"); } catch (_) { curToolBlock.input = {}; }
-                streamToolBlocks.push(curToolBlock);
-                curToolBlock = null;
-              } else if (evt.type === "message_delta" && evt.delta?.stop_reason) {
-                stopReason = evt.delta.stop_reason;
-              }
-            } catch (_) {}
-          }
-        }
-        if (stopReason === "tool_use" && streamToolBlocks.length) {
-          // Model wants more tool calls even on what we guessed was the final turn — continue the loop
-          messages.push({ role: "assistant", content: streamToolBlocks });
-          messages.push({ role: "user", content: streamToolBlocks.map((b) => ({ type: "tool_result", tool_use_id: b.id, content: b.output || "Tool executed." })) });
-          lastData = { content: [], stop_reason: "tool_use" };
-          continue;
-        }
-        lastData = { content: [{ type: "text", text: accumulated }], stop_reason: stopReason || "end_turn" };
-        break;
-      }
-
-      const data = await res.json();
-      // Rate-limit detection (windowed or flat) — surface reset time, reuse stale cache if any
-      const rl = detectRateLimit(data);
-      if (rl.limited) {
-        const stale = cacheKey ? SEARCH_CACHE.get(cacheKey) : null;
-        if (stale) {
-          return { text: stale.text, cached: true, stale: true, age: cacheAgeStr(stale.ts), resetsAt: rl.resetsAt };
-        }
-        throw new Error(`Search limit reached — resets ${fmtResetTime(rl.resetsAt)} ET.`);
-      }
-      if (data.error) throw new Error(`API error: ${data.error.message || JSON.stringify(data.error)}`);
-      lastData = data;
-      if (data.stop_reason !== "tool_use") break;
-      const toolBlocks = (data.content || []).filter((b) => b.type === "tool_use");
-      if (!toolBlocks.length) break;
-      messages.push({ role: "assistant", content: data.content });
-      messages.push({
-        role: "user",
-        content: toolBlocks.map((b) => ({
-          type: "tool_result", tool_use_id: b.id,
-          content: b.output || "Tool executed.",
-        })),
-      });
-    }
-    const text = (lastData?.content || []).map((b) => b.text || "").filter(Boolean).join("\n");
+    /* ── Non-streaming path ── */
+    const res = await fetch("/api/gemini", {
+      method: "POST", headers, body: JSON.stringify(geminiBody),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(`Gemini API error: ${data.error.message || JSON.stringify(data.error)}`);
+    const text = (data.candidates?.[0]?.content?.parts || [])
+      .map((p) => p.text || "").filter(Boolean).join("\n");
     if (!text) throw new Error("Received empty response — try again.");
     if (cacheKey) SEARCH_CACHE.set(cacheKey, { text, ts: Date.now() });
     return { text, cached: false };
@@ -4145,10 +4158,10 @@ ${template}`;
     try {
       // Cache key includes session + loaded-symbol count so a new CSV load refreshes it
       const key = `tape:${session}:${loadedCount}`;
-      const r = await callClaude({
+      const r = await callGemini({
         system, maxTokens: 2400,
         userContent: promptWithSearch,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [{ googleSearch: {} }],
         cacheKey: key,
       });
       text = r.text;
@@ -4159,7 +4172,7 @@ ${template}`;
         text = `🔌 OFFLINE / STATIC MODE\n\nThis desk is running in a public browser context where live API calls are not available.\n\nYour CSV data is fully loaded and graded below — all A+/Verdict/Sigma scores, WITS, Con Score, and regime analysis are derived from your watchlist data and require no live connection.\n\nTo access live Roll the Tape:\n• Open this artifact inside claude.ai (in-app, logged in)\n• Or paste this session's data into a new claude.ai conversation\n\n📋 DESK SNAPSHOT (from loaded CSV)\n${buildTapeContext().csvLines.slice(0,30).join("\n")}`;
       } else {
         try {
-          const r2 = await callClaude({
+          const r2 = await callGemini({
               system, maxTokens: 1800, userContent: promptCSVOnly,
               onStream: (partial) => setTapeOutput({ session: sessionLabels[session], text: partial, loading: true }),
             });
@@ -4504,9 +4517,9 @@ Execution: [PLAY ON / WAIT / NO TRADE] — one sentence + why
          and starts writing the Trade Card, that turn streams normally) — so
          on-desk charts (no search needed) and off-desk charts (1-2 searches
          then a streamed answer) both get fast, visible token-by-token output. */
-      const r = await callClaude({
+      const r = await callGemini({
         maxTokens: 1800, system, userContent,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [{ googleSearch: {} }],
         onStream: (partial) => setChartAnalysis({ loading: true, text: partial }),
       });
       setChartAnalysis({ loading: false, text: r.text });
@@ -4554,10 +4567,10 @@ Return ONLY a JSON array, no other text, no markdown:
 Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
 
     try {
-      const r = await callClaude({
+      const r = await callGemini({
         maxTokens: 800,
         userContent: prompt,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [{ googleSearch: {} }],
         cacheKey: `cal:${dayKey}`,
         force,
       });
