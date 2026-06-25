@@ -2375,37 +2375,64 @@ function toYahooSym(ticker) {
   return t; // equities / ETFs pass through
 }
 
+/* True on Netlify deploy; false on localhost. Used to route price fetches
+   through /api/prices (server-side, no CORS) instead of the allorigins proxy. */
+const IS_NETLIFY = typeof window !== "undefined" &&
+  !["localhost", "127.0.0.1"].includes(window.location.hostname);
+
 async function fetchLivePrices(symbols) {
   const filtered = symbols.map(toYahooSym).filter(Boolean);
   if (!filtered.length) return;
-  // Batch into chunks of 10 (allorigins has URL length limits)
+  // Batch into chunks of 10 (URL length / rate-limit constraints)
   const chunks = [];
   for (let i = 0; i < filtered.length; i += 10) chunks.push(filtered.slice(i, i + 10));
+
   for (const chunk of chunks) {
-    const syms = chunk.join("%2C"); // comma-encoded
-    const url = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${syms}&range=1d&interval=1d`;
-    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    try {
-      const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const wrapper = await res.json();
-      const data = JSON.parse(wrapper.contents);
-      const results = data?.spark?.result || [];
-      for (const r of results) {
-        const raw = r?.symbol;
-        if (!raw) continue;
-        const resp = r?.response?.[0];
-        const closes = resp?.indicators?.quote?.[0]?.close || [];
-        const meta   = resp?.meta || {};
-        if (!closes.length) continue;
-        const price  = Number((meta.regularMarketPrice || closes[closes.length - 1]).toFixed(2));
-        const prev   = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2];
-        const pct    = prev ? Number(((price - prev) / prev * 100).toFixed(2)) : 0;
-        const open   = meta.regularMarketOpen || meta.chartPreviousClose || price;
-        const pctO   = open ? Number(((price - open) / open * 100).toFixed(2)) : 0;
-        PRICE_CACHE.set(raw.toUpperCase(), { price, pct, pctOpen: pctO, ts: Date.now(), source: "yahoo" });
-      }
-    } catch (_) { /* proxy blocked or timed out — skip this chunk */ }
+    let fetched = false;
+
+    // ── Path A: server-side proxy (Netlify deploy — Yahoo + AV fallback) ──
+    if (IS_NETLIFY) {
+      try {
+        const res = await fetch(`/api/prices?symbols=${chunk.join(",")}`,
+          { signal: AbortSignal.timeout(8000) });
+        if (res.ok) {
+          const data = await res.json();
+          for (const q of (data.quotes || [])) {
+            PRICE_CACHE.set(q.symbol.toUpperCase(),
+              { price: q.price, pct: q.pct, pctOpen: q.pctOpen, ts: Date.now(), source: q.source || "server" });
+          }
+          fetched = true;
+        }
+      } catch (_) { /* server unavailable — fall through to allorigins */ }
+    }
+
+    // ── Path B: allorigins CORS proxy (local dev or server fallback) ──
+    if (!fetched) {
+      const syms = chunk.join("%2C");
+      const url = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${syms}&range=1d&interval=1d`;
+      const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+      try {
+        const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) continue;
+        const wrapper = await res.json();
+        const data = JSON.parse(wrapper.contents);
+        const results = data?.spark?.result || [];
+        for (const r of results) {
+          const raw = r?.symbol;
+          if (!raw) continue;
+          const resp = r?.response?.[0];
+          const closes = resp?.indicators?.quote?.[0]?.close || [];
+          const meta   = resp?.meta || {};
+          if (!closes.length) continue;
+          const price  = Number((meta.regularMarketPrice || closes[closes.length - 1]).toFixed(2));
+          const prev   = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2];
+          const pct    = prev ? Number(((price - prev) / prev * 100).toFixed(2)) : 0;
+          const open   = meta.regularMarketOpen || meta.chartPreviousClose || price;
+          const pctO   = open ? Number(((price - open) / open * 100).toFixed(2)) : 0;
+          PRICE_CACHE.set(raw.toUpperCase(), { price, pct, pctOpen: pctO, ts: Date.now(), source: "yahoo" });
+        }
+      } catch (_) { /* proxy blocked or timed out — skip this chunk */ }
+    }
   }
 }
 
@@ -2990,7 +3017,68 @@ export default function SigmaBondCoPilot() {
     refreshPrices(true);
     const id = setInterval(() => refreshPrices(false), 15 * 60 * 1000); // 15 min auto-refresh
     return () => clearInterval(id);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Auto-load TOS CSV exports from /data/tos-exports/ ──────────────────────
+     On every fresh page load the app fetches the manifest to read exportedAt.
+
+     Rules:
+     • If localStorage already has data with a NEWER _savedAt than the manifest,
+       skip — the user's manual upload takes priority.
+     • If the manifest is ≤15 min old: load CSVs silently (TOS columns intact,
+       prices are recent enough to trust from the file).
+     • If the manifest is >15 min old: load CSVs (to preserve the custom TOS
+       columns), then immediately fire a live price refresh so the Mark column
+       is overlaid with fresh prices. */
+  const TOS_STALE_MS = 15 * 60 * 1000;
+  useEffect(() => {
+    (async () => {
+      try {
+        const manifest = await fetch("/data/tos-exports/manifest.json", { cache: "no-cache" })
+          .then((r) => (r.ok ? r.json() : null));
+        if (!manifest?.exportedAt) return;
+
+        // Don't clobber a newer manual upload already in localStorage
+        try {
+          const localRaw = localStorage.getItem("sbcp-datasets-local");
+          if (localRaw) {
+            const local = JSON.parse(localRaw);
+            if (local._savedAt && new Date(local._savedAt) >= new Date(manifest.exportedAt)) return;
+          }
+        } catch (_) {}
+
+        const csvAge = Date.now() - new Date(manifest.exportedAt).getTime();
+
+        const [futuresText, sectorText, topText, scansText] = await Promise.all(
+          ["Futures.csv", "Sector_Symbols.csv", "Top_5.csv", "Scans.csv"].map((f) =>
+            fetch(`/data/tos-exports/${f}`, { cache: "no-cache" })
+              .then((r) => (r.ok ? r.text() : null))
+              .catch(() => null)
+          )
+        );
+
+        const texts = [futuresText, sectorText, topText, scansText].filter(Boolean);
+        if (!texts.length) return;
+
+        setDatasets((d) => {
+          let merged = { ...d };
+          for (const text of texts) {
+            const tier = sniffTier(text);
+            merged = { ...merged, [tier]: parseCSV(text) };
+          }
+          merged._savedAt = manifest.exportedAt;
+          try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
+          WS.set("sbcp-datasets", JSON.stringify(merged), false).catch(() => {});
+          return merged;
+        });
+        setStoredAt(manifest.exportedAt);
+        setActiveTier("stocks");
+
+        // Overlay live prices if the TOS export is stale
+        if (csvAge > TOS_STALE_MS) refreshPrices(true);
+      } catch (_) { /* /data/tos-exports not present — silent, user can upload manually */ }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* grade each tier */
   const gMacro = useMemo(() => gradeDataset(datasets.macro), [datasets.macro]);

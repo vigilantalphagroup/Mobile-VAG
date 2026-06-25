@@ -1,0 +1,80 @@
+﻿Quote on 6/24/26 09:28:37
+
+TOP5
+Symbol,Sector,Momo,Mark,Volume,%C-WOPEN,LWC,%Change,EXT %Chng,IV+,Impl Vol,-V%,VD%,IFP,Con score,SMRTx,WITS,STRSI,RS5,RS10,RS21,15m,2hr,D,W
+AAPL,Information Technology, ,295.390,"313,734",-1.01%,1.0,0.00%,+0.52%,38.0,26.73%,10.24%,1.1,INF ↓,STABLE,18.0,SIDELINE,loading,100.0,52.1,22.9,4,1,1,loading
+MSFT,Information Technology,TYBD,370.690,"394,147",-0.48%,-1.0,0.00%,-0.90%,71.0,36.40%,9.76%,0.9,↑(TRIG),STABLE,10.0,DISTRIBUTION,EARLY -8,46.9,25.3,12.8,1,2,1,1
+NVDA,Information Technology, ,200.040,"2,529,097",-5.39%,-3.0,0.00%,+0.01%,41.0,43.13%,4.38%,0.92,↓(TRIG),PRIMED,17.0,P4→P5,EXP -7,0.0,0.0,0.0,1,1,loading,5
+AVGO,Information Technology, ,387.970,"3,157,708",-8.10%,-3.0,0.00%,+2.06%,16.0,52.05%,7.03%,0.67,↓(TRIG),STABLE,9.0,P4→P5,EXP -7,29.8,29.8,10.0,3,1,1,5
+ADBE,Information Technology, ,197.000,"41,337",2.09%,-1.0,0.00%,-0.37%,55.0,43.57%,0.76%,0.77,↑(TRIG),STABLE,54.0,SIDELINE,EXP -7,47.7,loading,7.3,3,2,1,1
+UNH,Health Care, ,409.460,"19,017",1.77%,loading,0.00%,+0.22%,40.0,39.77%,7.88%,1.49,↓(TRIG),STABLE,100.0,SIDELINE,-,100.0,64.8,loading,3,3,3,3
+JNJ,Health Care, ,239.080,"5,297",4.42%,3.0,0.00%,+0.23%,71.0,27.59%,3.95%,1.09,↑(TRIG),EXPANDING,61.0,SIDELINE,-,100.0,73.5,80.3,3,3,3,3
+LLY,Health Care, ,1111.000,"8,758",-0.46%,-1.0,0.00%,+1.07%,42.0,36.73%,9.67%,1.24,↓(TRIG),PRIMED,loading,DRIVING+,-,100.0,30.8,loading,3,2,1,4
+MRK,Health Care, ,119.910,"10,869",4.94%,3.0,0.00%,+0.33%,37.0,30.30%,1.85%,0.97,↑(TRIG),PRIMED,51.0,SIDELINE,EARLY 8,100.0,76.1,75.7,3,loading,3,3
+ABBV,Health Care,TBO,234.760,"3,566",5.78%,3.0,0.00%,+0.17%,47.0,28.20%,1.88%,0.86,—,PRIMED,71.0,P2→P3,-,100.0,loading,100.0,loading,4,3,3
+JPM,Financials, ,334.500,"13,156",1.35%,1.0,0.00%,+0.25%,41.0,29.01%,-1.89%,1.12,↓(TRIG),PRIMED,66.0,DRIVING+,EXP 7,100.0,100.0,100.0,3,3,3,3
+BAC,Financials, ,57.930,"46,593",1.86%,2.0,0.00%,+0.26%,23.0,28.73%,-1.84%,1.4,↑(TRIG),STABLE,73.0,DRIVING+,-,100.0,100.0,100.0,4,3,3,3
+WFC,Financials, ,84.130,"4,196",loading,-1.0,0.00%,-0.03%,35.0,33.88%,1.65%,1.35,↓(TRIG),STABLE,93.0,SIDELINE,EXP 7,100.0,100.0,100.0,4,3,4,3
+GS,Financials, ,1094.440,"69,224",-1.38%,3.0,0.00%,-0.36%,54.0,37.15%,1.92%,1.04,↓(TRIG),STABLE,19.0,DRIVING+,loading,100.0,100.0,100.0,1,1,3,3
+AMZN,Consumer Discretionary, ,233.990,"372,914",-2.49%,-1.0,0.00%,-0.08%,41.0,37.27%,13.87%,1.03,↑(TRIG),STABLE,5.0,RESET,EXP -7,36.4,26.3,10.9,3,1,1,1
+TSLA,Consumer Discretionary, ,380.180,"686,548",-3.35%,-3.0,0.00%,-0.37%,26.0,51.91%,4.07%,1.04,loading,PRIMED,55.0,loading,EARLY -7,0.0,0.0,0.0,1,1,1,1
+HD,Consumer Discretionary,loading,325.240,"7,445",-1.68%,-2.0,0.00%,+0.75%,loading,31.47%,7.48%,1.15,↓(TRIG),loading,19.0,RESET,-,23.1,26.6,75.8,3,1,5,1
+MCD,Consumer Discretionary,TYBD,271.660,"17,187",-1.93%,-1.0,0.00%,+0.25%,62.0,22.73%,5.43%,1.12,loading,STABLE,0.0,SIDELINE,-,31.0,21.8,21.8,3,1,1,1
+LOW,Consumer Discretionary, ,215.000,"1,795",-1.82%,-1.0,0.00%,+0.68%,69.0,33.25%,2.03%,1.02,↑(TRIG),STABLE,8.0,DISTRIBUTION,-,22.4,17.2,57.0,3,1,1,1
+UNP,Industrials, ,258.610,220,0.81%,-1.0,0.00%,0.00%,54.0,26.46%,7.93%,0.84,INF ↓,STABLE,65.0,P4→P5,EXP -7,60.5,29.0,26.7,3,1,1,5
+UPS,Industrials, ,105.830,"18,338",0.89%,-3.0,0.00%,-0.26%,loading,33.42%,16.06%,0.94,↓(TRIG),STABLE,75.0,SIDELINE,loading,loading,44.0,58.1,3,1,1,3
+CAT,Industrials,T2BO,984.240,"15,717",-1.51%,1.0,0.00%,+0.33%,68.0,42.77%,8.65%,0.89,↓(TRIG),PRIMED,69.0,DRIVING+,-,69.0,81.0,84.5,1,5,3,3
+RTX,Industrials, ,186.390,"8,524",0.98%,3.0,0.00%,+0.26%,58.0,31.99%,20.03%,0.93,INF ↑,STABLE,15.0,RECOVERY,loading,60.3,61.0,78.3,3,3,4,loading
+GE,Industrials, ,356.470,"4,738",-0.33%,1.0,0.00%,-0.05%,69.0,41.25%,1.43%,1.25,loading,loading,46.0,DRIVING+,-,100.0,100.0,100.0,5,5,3,3
+XOM,Energy, ,137.600,"195,189",0.86%,-3.0,0.00%,-1.91%,51.0,29.93%,-3.98%,1.05,↑(TRIG),STABLE,22.0,SIDELINE,-,100.0,22.6,22.6,1,3,1,1
+CVX,Energy,T2BD,174.090,"43,380",1.09%,-1.0,0.00%,-1.38%,loading,28.20%,-1.12%,loading,↑(TRIG),STABLE,60.0,SIDELINE,-,86.0,22.3,22.3,loading,2,1,1
+COP,Energy, ,107.840,"13,602",0.40%,loading,0.00%,-2.43%,41.0,34.06%,1.25%,1.05,↑(TRIG),STABLE,69.0,SIDELINE,-,93.8,24.0,24.0,1,3,1,1
+SLB,Energy,C2BD,47.100,"8,363,783",-1.26%,-1.0,0.00%,-1.80%,37.0,36.64%,2.72%,0.89,↑(TRIG),loading,18.0,DISTRIBUTION,-,10.8,5.4,5.2,loading,1,1,1
+EOG,Energy,loading,133.450,284,2.95%,3.0,0.00%,-0.65%,55.0,33.70%,0.54%,1.05,↑(TRIG),STABLE,59.0,SIDELINE,-,100.0,44.7,44.7,1,loading,2,4
+PG,Consumer Staples,loading,150.860,"10,934",0.50%,3.0,0.00%,+0.34%,56.0,24.64%,0.57%,0.91,—,PRIMED,11.0,SIDELINE,EARLY 8,100.0,73.2,88.0,3,3,4,3
+INTC,Information Technology, ,133.150,"2,566,710",loading,3.0,0.00%,+0.70%,97.0,97.99%,6.75%,1.0,↓(TRIG),PRIMED,80.0,DRIVING+,-,71.6,77.4,82.3,loading,5,3,3
+PEP,Consumer Staples, ,142.050,"18,856",0.55%,-3.0,0.00%,+0.46%,64.0,28.98%,-1.66%,1.32,loading,STABLE,46.0,SIDELINE,-,68.7,34.9,31.5,3,2,1,1
+WMT,Consumer Staples, ,119.460,"50,776",2.11%,-3.0,0.00%,-0.02%,34.0,28.01%,5.03%,1.24,↑(TRIG),PRIMED,72.0,SIDELINE,-,100.0,50.6,68.7,3,3,4,1
+KO,Consumer Staples, ,80.310,"566,052",1.34%,-3.0,0.00%,+0.02%,48.0,21.17%,loading,0.84,loading,loading,57.0,SIDELINE,EXP -7,100.0,29.9,48.0,3,3,4,4
+NEE,Utilities, ,86.530,"12,485",-0.53%,1.0,0.00%,+0.32%,20.0,24.66%,1.15%,1.13,↓(TRIG),STABLE,37.0,SIDELINE,-,100.0,74.9,73.3,3,1,3,1
+DUK,Utilities, ,125.050,663,1.27%,3.0,0.00%,0.00%,33.0,20.24%,-5.78%,1.09,↑(TRIG),STABLE,56.0,P1→P2,-,100.0,51.9,71.6,3,3,4,2
+SO,Utilities, ,94.930,"1,688",2.01%,3.0,0.00%,+0.18%,48.0,20.24%,-11.4%,0.96,↑(TRIG),STABLE,57.0,SIDELINE,-,100.0,71.0,84.8,4,3,3,3
+EXC,Utilities, ,46.620,207,loading,3.0,0.00%,-0.02%,51.0,21.94%,0.51%,1.08,↑(TRIG),STABLE,23.0,P1→P2,EARLY 8,100.0,93.5,96.3,1,loading,3,2
+AEP,Utilities,TBO,133.740,"98,879",4.33%,3.0,0.00%,-0.09%,45.0,23.83%,0.85%,1.08,↑(TRIG),IGNITION,71.0,loading,-,100.0,100.0,loading,1,3,3,3
+LIN,, ,512.850,"2,855",0.84%,-3.0,0.00%,+0.32%,loading,24.94%,5.91%,1.32,↑(TRIG),PRIMED,71.0,SIDELINE,-,100.0,42.5,70.2,3,1,5,3
+APD,Materials, ,282.450,630,1.10%,3.0,0.00%,+0.08%,39.0,28.32%,7.5%,1.54,loading,STABLE,65.0,SIDELINE,-,100.0,72.7,64.1,5,4,3,1
+SHW,Materials, ,322.900,906,2.19%,-3.0,0.00%,+0.28%,66.0,31.71%,7.77%,1.0,loading,PRIMED,68.0,RECOVERY,EARLY 8,100.0,100.0,100.0,1,3,3,2
+ECL,Materials, ,268.660,182,0.37%,-3.0,0.00%,+1.46%,71.0,27.77%,1.35%,1.02,loading,STABLE,63.0,RECOVERY,EARLY 8,94.4,96.3,99.0,3,1,4,2
+NEM,Materials, ,93.740,"149,160",-2.05%,-1.0,0.00%,-4.34%,45.0,45.81%,-0.28%,0.81,↓(TRIG),loading,60.0,SIDELINE,-,0.0,24.4,18.3,1,1,1,1
+PLD,Real Estate, ,145.250,745,3.26%,-1.0,0.00%,-0.71%,38.0,27.12%,3.83%,1.0,INF ↓,STABLE,62.0,SIDELINE,-,100.0,63.4,69.2,1,3,3,4
+AMT,Real Estate,T2BD,179.380,"114,858",2.08%,-1.0,0.00%,-0.48%,51.0,28.65%,-4.99%,0.93,INF ↑,STABLE,57.0,DISTRIBUTION,EARLY -7,loading,26.2,26.2,1,2,1,1
+EQIX,Real Estate,TYBO,1115.930,"13,246",1.43%,1.0,0.00%,+0.19%,59.0,31.40%,21.44%,1.54,↓(TRIG),STABLE,67.0,SIDELINE,-,100.0,100.0,100.0,1,4,3,3
+CCI,Real Estate,T2BD,84.330,"210,221",3.56%,-1.0,0.00%,+0.12%,49.0,30.27%,-5.65%,0.87,↓(TRIG),STABLE,58.0,DISTRIBUTION,EARLY -8,62.6,24.5,24.5,3,2,1,1
+WELL,Real Estate,TBO,217.670,"1,361",4.75%,3.0,0.00%,+0.13%,58.0,27.14%,loading,0.74,↑(TRIG),PRIMED,60.0,P2→P3,-,loading,100.0,100.0,1,3,loading,3
+GOOGL,Communication Services,TBD,348.580,"452,811",-3.30%,-2.0,0.00%,+0.70%,loading,35.78%,8.67%,1.06,—,STABLE,30.0,P4→P5,EXP -7,4.1,4.0,2.2,4,1,1,5
+META,Communication Services, ,562.200,"113,192",-1.72%,-1.0,0.00%,+0.04%,54.0,39.71%,10.64%,0.87,↑(TRIG),STABLE,16.0,SIDELINE,EXP -6,16.8,16.8,7.9,4,1,1,1
+DIS,Communication Services, ,103.530,"9,427",0.12%,1.0,0.00%,+0.07%,27.0,29.09%,9.75%,1.43,↑(TRIG),PRIMED,38.0,SIDELINE,-,100.0,100.0,100.0,4,3,3,3
+NFLX,Communication Services,CYBD,72.610,"381,610",loading,-1.0,0.00%,-0.30%,99.0,50.64%,8.37%,1.79,↑(TRIG),STABLE,loading,loading,-,16.1,7.1,5.3,1,1,1,1
+TMUS,Communication Services,loading,184.570,"2,993",3.87%,-1.0,0.00%,-0.31%,56.0,33.12%,5.18%,1.23,↑(TRIG),STABLE,82.0,SIDELINE,-,100.0,55.1,64.8,3,3,2,1
+MSTR,Information Technology,C2BD,102.800,"652,370",-10.64%,-1.0,0.00%,-1.43%,loading,97.62%,15.45%,loading,↓(TRIG),STABLE,33.0,SIDELINE,EXP -7,0.0,0.0,0.0,1,1,1,1
+HCA,Health Care, ,386.920,224,3.62%,-1.0,0.00%,-0.23%,60.0,34.84%,10.01%,1.08,↑(TRIG),STABLE,80.0,RESET,EARLY 8,86.6,loading,86.2,1,3,4,loading
+HOOD,Financials, ,102.190,"495,182",-4.40%,1.0,0.00%,-1.09%,40.0,75.02%,5.54%,0.91,loading,STABLE,13.0,DRIVING+,-,73.1,86.1,90.8,1,1,3,3
+SOFI,Financials, ,17.250,"702,761",-1.71%,3.0,0.00%,-0.29%,24.0,64.73%,10.25%,1.04,↑(TRIG),STABLE,23.0,P1→P2,-,56.4,76.6,66.3,1,1,4,loading
+AMAT,Information Technology, ,584.830,"81,271",loading,-3.0,0.00%,-0.42%,100.0,82.88%,14.99%,1.04,—,PRIMED,76.0,DRIVING+,-,37.7,64.2,77.1,1,1,3,3
+TRV,Financials,TBO,316.960,515,2.87%,1.0,0.00%,-0.02%,44.0,25.51%,-6.99%,1.19,INF ↑,EXPANDING,75.0,P2→P3,EXP 7,100.0,100.0,100.0,3,3,3,3
+CRM,Information Technology,T2BD,152.000,"83,478",2.17%,-1.0,0.00%,-1.09%,60.0,45.52%,-1.24%,0.78,loading,STABLE,loading,SIDELINE,EXP -7,49.2,18.3,9.1,1,loading,1,1
+HON,Industrials, ,223.080,"49,912",-3.22%,-3.0,0.00%,+0.51%,loading,34.00%,4.02%,0.83,—,STABLE,16.0,SIDELINE,-,0.0,loading,51.1,5,loading,1,1
+IBM,Information Technology, ,264.000,"155,642",6.65%,-1.0,0.00%,-0.73%,62.0,49.30%,16.52%,0.69,↑(TRIG),PRIMED,41.0,P2→P3,-,95.4,57.9,26.3,loading,3,1,4
+AMGN,Health Care, ,347.010,"3,105",2.77%,-1.0,0.00%,+0.03%,loading,28.72%,3.03%,1.01,↑(TRIG),STABLE,66.0,P1→P2,-,100.0,62.0,74.1,3,3,4,2
+KHC,Consumer Staples, ,22.470,"22,194",-0.79%,-1.0,0.00%,+0.18%,38.0,30.11%,-10.46%,1.01,—,STABLE,14.0,SIDELINE,EARLY -7,44.4,24.9,24.9,3,1,1,1
+MO,Consumer Staples, ,71.610,"18,697",3.53%,3.0,0.00%,-0.01%,loading,24.76%,4.36%,0.86,↑(TRIG),PRIMED,66.0,SIDELINE,-,100.0,52.5,57.2,3,3,3,4
+MU,Information Technology, ,1083.200,"3,981,908",-12.08%,-3.0,0.00%,+3.07%,95.0,114.84%,-0.96%,0.87,—,EXPANDING,56.0,DRIVING+,EARLY -7,25.5,48.9,67.9,1,1,5,3
+APP,Information Technology,C2BD,463.500,"13,902",2.12%,-1.0,0.00%,-1.28%,34.0,73.26%,6.02%,0.99,↑(TRIG),STABLE,74.0,PULLBACK,-,12.1,8.4,3.8,1,1,1,5
+KLAC,Information Technology, ,242.110,"82,507",-7.95%,-3.0,0.00%,-0.99%,100.0,84.55%,14.5%,0.91,—,PRIMED,71.0,DRIVING+,-,35.0,57.6,72.7,1,1,loading,3
+STX,Information Technology, ,1038.000,"59,106",-4.63%,3.0,0.00%,+0.13%,99.0,95.55%,7.52%,loading,loading,PRIMED,86.0,DRIVING+,-,38.4,83.0,84.7,1,1,4,3
+GEV,Industrials, ,1046.000,"33,645",-8.41%,1.0,0.00%,+1.74%,51.0,53.71%,9.89%,0.85,↓(TRIG),EXPANDING,17.0,SIDELINE,-,47.3,65.2,65.2,4,1,3,3
+MS,Financials, ,226.030,"72,969",-0.30%,1.0,0.00%,-0.07%,loading,36.09%,2.44%,1.31,↓(TRIG),STABLE,87.0,DRIVING+,-,100.0,100.0,100.0,1,5,3,3
+SNDK,Information Technology, ,1990.000,"477,514",-14.38%,-3.0,0.00%,+1.40%,92.0,123.85%,10.85%,1.12,loading,EXPANDING,loading,DRIVING+,EXP -7,7.2,52.0,63.6,1,1,5,3
+PLTR,Information Technology,CYBD,114.030,"1,301,798",-7.19%,-1.0,0.00%,-2.31%,loading,58.66%,13.77%,0.86,↓(TRIG),loading,44.0,SIDELINE,EXP -7,0.0,0.0,0.0,1,1,1,1
+MRVL,Information Technology, ,282.000,"968,817",-10.96%,-3.0,0.00%,+1.34%,83.0,105.77%,-4.23%,0.67,↓(TRIG),STABLE,22.0,DRIVING+,EARLY -8,17.1,43.6,72.7,1,1,5,3
+RIOT,Information Technology, ,28.370,"82,483",0.88%,3.0,0.00%,-0.99%,33.0,91.90%,5.38%,1.39,↑(TRIG),STABLE,96.0,DRIVING+,-,100.0,100.0,100.0,1,4,3,3
