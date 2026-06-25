@@ -1,6 +1,5 @@
 """
 tos_sync.py — ThinkorSwim CSV Auto-Sync for Vigilant Alpha Group
-================================================================
 Watches your TOS export folder. The moment new CSVs appear, it:
   1. Copies them into the repo  (public/data/tos-exports/)
   2. Updates manifest.json      (sets exportedAt to right now)
