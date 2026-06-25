@@ -3050,6 +3050,9 @@ export default function SigmaBondCoPilot() {
         const texts = [futuresText, sectorText, topText, scansText].filter(Boolean);
         if (!texts.length) return;
 
+        // Set BEFORE setDatasets so the Discord effect sees "auto" when it fires
+        captureTriggerRef.current = "auto";
+
         setDatasets((d) => {
           let merged = { ...d };
           for (const text of texts) {
@@ -3057,7 +3060,6 @@ export default function SigmaBondCoPilot() {
             merged = { ...merged, [tier]: parseCSV(text) };
           }
           merged._savedAt = manifest.exportedAt;
-          captureTriggerRef.current = "auto"; // suppress Discord A+ alert on silent auto-load
           try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
           WS.set("sbcp-datasets", JSON.stringify(merged), false).catch(() => {});
           return merged;
@@ -3964,7 +3966,7 @@ export default function SigmaBondCoPilot() {
       if (!res.ok || !res.body) {
         const ct = res.headers.get("content-type") || "";
         if (!ct.includes("application/json")) {
-          throw new Error("Gemini function not reachable — make sure the branch is merged and GEMINI_API_KEY is set in Netlify.");
+          throw new Error("Gemini function not reachable — check that SIGMABOND_API is set in Netlify environment variables.");
         }
         const errData = await res.json().catch(() => ({}));
         throw new Error(`Gemini API error: ${errData?.error?.message || res.status}`);
@@ -4002,7 +4004,7 @@ export default function SigmaBondCoPilot() {
     // Guard: if the response is HTML (function not deployed / 404) give a clean error
     const contentType = res.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
-      throw new Error("Gemini function not reachable — make sure the branch is merged and GEMINI_API_KEY is set in Netlify.");
+      throw new Error("Gemini function not reachable — check that SIGMABOND_API is set in Netlify environment variables.");
     }
     const data = await res.json().catch(() => { throw new Error(`Gemini returned an unreadable response (HTTP ${res.status})`); });
     if (data.error) throw new Error(`Gemini API error: ${data.error.message || JSON.stringify(data.error)}`);
