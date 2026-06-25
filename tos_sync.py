@@ -1,6 +1,5 @@
 """
 tos_sync.py — ThinkorSwim CSV Auto-Sync for Vigilant Alpha Group
-================================================================
 Watches your TOS export folder. The moment new CSVs appear, it:
   1. Copies them into the repo  (public/data/tos-exports/)
   2. Updates manifest.json      (sets exportedAt to right now)
@@ -32,6 +31,7 @@ import re
 import sys
 import json
 import shutil
+import hashlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -223,6 +223,17 @@ class TOSHandler(FileSystemEventHandler):
             dest_name = TIER_FILENAME[tier]
             dest_path = DEST_DIR / dest_name
             DEST_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Scans tier: only push when content actually changed (it's
+            # miscellaneous / options-heavy and gets re-exported frequently
+            # with no real changes). Core tiers (macro/sector/stocks) always push.
+            if tier == "scans" and dest_path.exists():
+                new_hash = hashlib.md5(p.read_bytes()).hexdigest()
+                old_hash = hashlib.md5(dest_path.read_bytes()).hexdigest()
+                if new_hash == old_hash:
+                    log.info(f"⏭   {p.name} → scans unchanged (same content hash) — skipping")
+                    continue
+
             shutil.copy2(p, dest_path)
             log.info(f"📂  {p.name}  →  {dest_name}  (tier: {tier})")
 
