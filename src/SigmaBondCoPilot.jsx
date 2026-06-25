@@ -4015,6 +4015,26 @@ export default function SigmaBondCoPilot() {
     return { text, cached: false };
   }
 
+  /* ── fetchFromAV: Alpha Vantage data enrichment via /api/av ───────────────
+     Additive overlay — never called in the grading pipeline. Used to enrich
+     Roll the Tape context with structured market data (news sentiment, session
+     leadership, technical indicators). Silently returns null on failure so
+     callers can always fall through gracefully. */
+  async function fetchFromAV(params) {
+    try {
+      const res = await fetch("/api/av", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data?.error) return null; // AV rate limit or error — silent fallback
+      return data;
+    } catch (_) { return null; }
+  }
+
   /* roll the tape — AM / LUNCH / PM (ICT macro windows)
      AM ties to pre-market + open, LUNCH is the midday macro, PM ties to
      the afternoon + after-hours. Always fetches live prices for the full
@@ -4060,6 +4080,35 @@ export default function SigmaBondCoPilot() {
       ? `\nUPCOMING ECON EVENTS:\n${calEvents.map((e) => `${e.time} ${e.impact === "HIGH" ? "🔴" : e.impact === "MED" ? "🟡" : "⚪"} ${e.name}${e.forecast ? ` (fcst ${e.forecast})` : ""}`).join("\n")}`
       : "";
     const csvBlock = csvLines.length ? csvLines.join("\n") : "(no CSV data loaded — running on live data only)";
+
+    /* ── Alpha Vantage enrichment (additive context — fires in parallel, silent on failure) ──
+       Fetches news sentiment for A+ names + session leadership (top gainers/losers).
+       Injected into the Gemini prompt as structured data, never overrides CSV grades. */
+    const aplusSymbols = [
+      ...gMacroLive.filter((r) => !r.isOptions && r.verdict?.startsWith("A+")),
+      ...gSectorLive.filter((r) => !r.isOptions && r.verdict?.startsWith("A+")),
+      ...gStocksLive.filter((r) => !r.isOptions && r.verdict?.startsWith("A+")),
+    ].map((r) => r.symbol.replace(/\[.*$/, "").trim()).filter((s) => !s.startsWith("/") && !s.startsWith("$")).slice(0, 5);
+
+    const [avNews, avLeaders] = await Promise.all([
+      aplusSymbols.length
+        ? fetchFromAV({ function: "NEWS_SENTIMENT", tickers: aplusSymbols.join(","), limit: 5 })
+        : Promise.resolve(null),
+      fetchFromAV({ function: "TOP_GAINERS_LOSERS" }),
+    ]);
+
+    let avCtx = "";
+    if (avNews?.feed?.length) {
+      const headlines = avNews.feed.slice(0, 5).map((a) =>
+        `• [${a.overall_sentiment_label || "NEUTRAL"}] ${a.title} (${a.source})`
+      ).join("\n");
+      avCtx += `\nALPHA VANTAGE NEWS SENTIMENT (A+ names):\n${headlines}`;
+    }
+    if (avLeaders?.top_gainers?.length) {
+      const gainers = avLeaders.top_gainers.slice(0, 3).map((g) => `${g.ticker} +${g.change_percentage}`).join(", ");
+      const losers  = avLeaders.top_losers?.slice(0, 3).map((l) => `${l.ticker} ${l.change_percentage}`).join(", ") || "";
+      avCtx += `\nSESSION LEADERSHIP — Top Gainers: ${gainers}${losers ? ` | Top Losers: ${losers}` : ""}`;
+    }
 
     /* mechanical overlays — computed, never guessed */
     const vw = volWeekInfo(new Date());
@@ -4130,7 +4179,7 @@ STEP 1 — VERIFY MARKET STATUS FIRST (mandatory, before any other research or w
 ${carryBlock}
 
 CSV SNAPSHOT (${loadedCount} symbols graded — latest loaded watchlists):
-${csvBlock}${calCtx}
+${csvBlock}${calCtx}${avCtx}
 
 ${overlays}
 
@@ -4149,7 +4198,7 @@ ${template}`;
 ${carryBlock}
 
 CSV SNAPSHOT (${loadedCount} symbols graded):
-${csvBlock}${calCtx}
+${csvBlock}${calCtx}${avCtx}
 
 ${overlays}
 
