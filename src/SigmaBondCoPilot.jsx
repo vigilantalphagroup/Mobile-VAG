@@ -1532,18 +1532,24 @@ function readLWC(s) {
   return { v: Number.isFinite(v) ? v : 0, raw: s };
 }
 function readPhase(s) {
-  // Timeframe columns (15m/2hr/D/W) export the five-phase trend number (1–5):
-  //   P1 Distribution → bear, P2 Recovery → bull, P3 Driving → bull,
-  //   P4 Consolidation → neutral, P5 Pullback → neutral.
+  // Timeframe columns (15m/2hr/D/W) export phase 1–5 or a transition like "1→2".
+  // Transition values come from the revised TOS phase script; destination phase is
+  // used for grading. The arrow string is preserved so TFCell can show "1→2" in UI.
+  const raw = String(s ?? "").trim();
+  const arrowMatch = raw.match(/^([1-5])[→>]([1-5])$/);
+  if (arrowMatch) {
+    const to = parseInt(arrowMatch[2]);
+    return { dir: phaseDir(to), phase: to, transition: `${arrowMatch[1]}→${arrowMatch[2]}` };
+  }
   const v = num(s);
   if (Number.isFinite(v)) {
     const p = Math.round(v);
-    return { dir: phaseDir(p), phase: p };
+    return { dir: phaseDir(p), phase: p, transition: null };
   }
-  const u = String(s).toUpperCase();
-  if (u.includes("BULL") || u.includes("UP") || u.includes("LONG")) return { dir: 1, phase: null };
-  if (u.includes("BEAR") || u.includes("DOWN") || u.includes("SHORT")) return { dir: -1, phase: null };
-  return { dir: 0, phase: null };
+  const u = raw.toUpperCase();
+  if (u.includes("BULL") || u.includes("UP") || u.includes("LONG")) return { dir: 1, phase: null, transition: null };
+  if (u.includes("BEAR") || u.includes("DOWN") || u.includes("SHORT")) return { dir: -1, phase: null, transition: null };
+  return { dir: 0, phase: null, transition: null };
 }
 function readSTRSI(s) {
   const u = String(s).toUpperCase().trim();
@@ -1721,6 +1727,7 @@ function gradeRow(raw, ctx) {
       tf: {
         d: phaseDir(optD.phase), w: 0, h2: phaseDir(optH2.phase), m15: phaseDir(opt15.phase),
         dP: optD.phase, wP: null, h2P: optH2.phase, m15P: opt15.phase,
+        dT: optD.transition, wT: null, h2T: optH2.transition, m15T: opt15.transition,
       },
       em: num(r.em), mark: num(r.mark), emHigh: NaN, emLow: NaN, emBreak: false,
       ref: {
@@ -2091,6 +2098,7 @@ function gradeRow(raw, ctx) {
     tf: {
       d: pD, w: pW, h2: p2h, m15: p15,
       dP: D.phase, wP: W.phase, h2P: H2.phase, m15P: M15.phase,
+      dT: D.transition, wT: W.transition, h2T: H2.transition, m15T: M15.transition,
     },
     em, mark, emHigh, emLow, emBreak,
     ref, rsPct: Math.round(rsPct), haveRS, rs5, rs10, rs21, rsSlope,
@@ -3058,6 +3066,10 @@ export default function SigmaBondCoPilot() {
           for (const text of texts) {
             const tier = sniffTier(text);
             merged = { ...merged, [tier]: parseCSV(text) };
+            if (tier === "scans") {
+              const title = extractCSVTitle(text);
+              if (title) merged._scansTitle = title;
+            }
           }
           merged._savedAt = manifest.exportedAt;
           try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(merged)); } catch (_) {}
@@ -3389,10 +3401,13 @@ export default function SigmaBondCoPilot() {
         return base + contractLine;
       };
       const lines = scansAplus.map(scanLine).join("\n");
+      const scansHeader = datasets._scansTitle
+        ? datasets._scansTitle.toUpperCase()
+        : "DYNAMIC WATCHLIST";
       const msg = [
         `🎯 **VAG SIGMA BOND — SCANS** | ${dateTag} ${timeTag}`,
         divider,
-        `**TOP-5 A+ · DYNAMIC WATCHLIST**`,
+        `**A+ · ${scansHeader}**`,
         "",
         lines,
         "",
@@ -3580,6 +3595,10 @@ export default function SigmaBondCoPilot() {
     const rows = parseCSV(text);
     const savedAt = new Date().toISOString();
     const next = { ...(prevDs || datasets), [tier]: rows, _savedAt: savedAt };
+    if (tier === "scans") {
+      const title = extractCSVTitle(text);
+      if (title) next._scansTitle = title;
+    }
     try { localStorage.setItem("sbcp-datasets-local", JSON.stringify(next)); } catch (_) {}
     WS.set("sbcp-datasets", JSON.stringify(next), false).catch(() => {});
     return { next, tier };
@@ -3634,6 +3653,10 @@ export default function SigmaBondCoPilot() {
         for (const text of texts) {
           const tier = sniffTier(text);
           merged = { ...merged, [tier]: parseCSV(text) };
+          if (tier === "scans") {
+            const title = extractCSVTitle(text);
+            if (title) merged._scansTitle = title;
+          }
           lastTier = tier;
         }
         merged._savedAt = savedAt;
@@ -5546,6 +5569,21 @@ function parseCSV(text) {
   });
 }
 
+/* Extract the watchlist title TOS inserts before the Symbol header row.
+   TOS format: "Quote on \u2026\n\n<TITLE>\nSymbol,\u2026"
+   Returns the title string, or null if not found. */
+function extractCSVTitle(text) {
+  const t = String(text).replace(/^\uFEFF/, "");
+  const lines = t.split(/\r?\n/);
+  const hi = lines.findIndex((l) => /^\s*symbol\s*,/i.test(l));
+  if (hi < 2) return null;
+  for (let i = hi - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line && !/^quote\s+on/i.test(line)) return line;
+  }
+  return null;
+}
+
 /* ---------- tally pill ---------- */
 function Tally({ label, n, color }) {
   return (
@@ -6061,10 +6099,10 @@ function BiasTab({ g }) {
     <div>
       <SectionLabel icon={Activity} text="Directional bias — Alpha Engine + Alpha Fox" />
       <div style={{ ...S.tfGrid, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-        <TFCell name="Weekly" sub="Alpha Cannon" dir={g.tf.w} phase={g.tf.wP} />
-        <TFCell name="Daily" sub="Alpha Cannon" dir={g.tf.d} phase={g.tf.dP} />
-        <TFCell name="2H" sub="Alpha Engine" dir={g.tf.h2} phase={g.tf.h2P} />
-        <TFCell name="15M" sub="Alpha Fox" dir={g.tf.m15} phase={g.tf.m15P} />
+        <TFCell name="Weekly" sub="Alpha Cannon" dir={g.tf.w} phase={g.tf.wP} transition={g.tf.wT} />
+        <TFCell name="Daily" sub="Alpha Cannon" dir={g.tf.d} phase={g.tf.dP} transition={g.tf.dT} />
+        <TFCell name="2H" sub="Alpha Engine" dir={g.tf.h2} phase={g.tf.h2P} transition={g.tf.h2T} />
+        <TFCell name="15M" sub="Alpha Fox" dir={g.tf.m15} phase={g.tf.m15P} transition={g.tf.m15T} />
       </div>
       <div style={{ ...S.kvGrid, overflowX: "auto" }}>
         <KV k="WITS phase" v={g.wits.label} dir={g.wits.dir} />
@@ -6430,13 +6468,14 @@ function KV({ k, v, dir }) {
     </div>
   );
 }
-function TFCell({ name, sub, dir, phase }) {
+function TFCell({ name, sub, dir, phase, transition }) {
   const c = dir === 1 ? COL.bull : dir === -1 ? COL.bear : COL.faint;
+  const label = transition || (phase ? `P${phase}` : dir === 1 ? "▲" : dir === -1 ? "▼" : "■");
   return (
     <div style={{ ...S.tfCell, borderColor: c + "44" }}>
       <span style={S.tfName}>{name}</span>
       <span style={{ ...S.tfArrow, color: c }}>
-        {phase ? `P${phase}` : dir === 1 ? "▲" : dir === -1 ? "▼" : "■"}
+        {label}
         {phase ? <span style={{ fontSize: 10 }}>{dir === 1 ? " ▲" : dir === -1 ? " ▼" : " ■"}</span> : null}
       </span>
       <span style={S.tfSub}>{sub}</span>
