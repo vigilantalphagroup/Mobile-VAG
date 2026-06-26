@@ -4732,6 +4732,21 @@ Impact must be exactly "HIGH", "MED", or "LOW". Up to 15 events.`;
         )}
       </header>
 
+      {/* ===== STALE DATA WARNING ===== */}
+      {storedAt && (() => {
+        const ageMs = Date.now() - new Date(storedAt).getTime();
+        const ageMins = Math.floor(ageMs / 60000);
+        if (ageMs < 15 * 60 * 1000) return null;
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 16px", background: `${COL.gold}18`, borderBottom: `1px solid ${COL.gold}44` }}>
+            <span style={{ fontSize: 13 }}>⚠️</span>
+            <span style={{ fontSize: 11, color: COL.gold, fontFamily: mono, letterSpacing: "0.03em" }}>
+              TOS DATA IS {ageMins} MIN OLD — export fresh CSVs from ThinkorSwim and drop them in the TOS CSV folder to update
+            </span>
+          </div>
+        );
+      })()}
+
       {/* ===== SESSION SYNC BANNER ===== */}
       {storedAt && (
         <div style={S.syncBanner}>
