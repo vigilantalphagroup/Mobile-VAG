@@ -157,9 +157,9 @@ def git_push(changed_files: list[str]):
         origin.set_url(repo_url)
 
         repo.index.add(changed_files)
-        repo.index.commit(f"chore: TOS sync {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+        repo.index.commit(f"chore: TOS sync {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} [skip netlify]")
         origin.push(refspec=f"{GIT_BRANCH}:{GIT_BRANCH}")
-        log.info("✅  Pushed to GitHub — Netlify deploying now")
+        log.info("✅  Pushed to GitHub (Netlify build skipped — app reads CSVs directly from GitHub)")
     except Exception as e:
         log.error(f"❌  Git push failed: {e}")
 

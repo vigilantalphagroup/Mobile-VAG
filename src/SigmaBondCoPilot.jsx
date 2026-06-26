@@ -3017,8 +3017,9 @@ export default function SigmaBondCoPilot() {
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Auto-load TOS CSV exports from /data/tos-exports/ ──────────────────────
-     On every fresh page load the app fetches the manifest to read exportedAt.
+  /* ── Auto-load TOS CSV exports ───────────────────────────────────────────────
+     Fetches from GitHub raw (public repo, no build needed on data update).
+     Falls back to the bundled /data/tos-exports/ path if GitHub is unreachable.
 
      Rules:
      • If localStorage already has data with a NEWER _savedAt than the manifest,
@@ -3029,11 +3030,16 @@ export default function SigmaBondCoPilot() {
        columns), then immediately fire a live price refresh so the Mark column
        is overlaid with fresh prices. */
   const TOS_STALE_MS = 15 * 60 * 1000;
+  const GH_RAW = "https://raw.githubusercontent.com/vigilantalphagroup/Mobile-VAG/main/public/data/tos-exports";
   useEffect(() => {
     (async () => {
       try {
-        const manifest = await fetch("/data/tos-exports/manifest.json", { cache: "no-cache" })
-          .then((r) => (r.ok ? r.json() : null));
+        // Try GitHub raw first (no Netlify build needed), fall back to bundled path
+        const manifestRes = await fetch(`${GH_RAW}/manifest.json`, { cache: "no-cache" })
+          .then((r) => (r.ok ? r : null))
+          .catch(() => null)
+          ?? await fetch("/data/tos-exports/manifest.json", { cache: "no-cache" }).catch(() => null);
+        const manifest = await manifestRes?.json().catch(() => null);
         if (!manifest?.exportedAt) return;
 
         // Don't clobber a newer manual upload already in localStorage
@@ -3047,9 +3053,10 @@ export default function SigmaBondCoPilot() {
 
         const csvAge = Date.now() - new Date(manifest.exportedAt).getTime();
 
+        const base = manifestRes?.url?.startsWith("https://raw.") ? GH_RAW : "/data/tos-exports";
         const [futuresText, sectorText, topText, scansText] = await Promise.all(
           ["Futures.csv", "Sector_Symbols.csv", "Top_5.csv", "Scans.csv"].map((f) =>
-            fetch(`/data/tos-exports/${f}`, { cache: "no-cache" })
+            fetch(`${base}/${f}`, { cache: "no-cache" })
               .then((r) => (r.ok ? r.text() : null))
               .catch(() => null)
           )
