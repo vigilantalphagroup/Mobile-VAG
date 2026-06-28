@@ -1313,6 +1313,30 @@ function volWeekInfo(nowDate = new Date()) {
   };
   return { week, label: labels[week], opex: next.toISOString().slice(0, 10) };
 }
+/* ── EFX calendar helpers ──────────────────────────────────────────────────── */
+function isQuarterlyOPEX(nowDate = new Date()) {
+  const quarterly = [2, 5, 8, 11]; // Mar, Jun, Sep, Dec (0-indexed)
+  const m = nowDate.getMonth();
+  if (!quarterly.includes(m)) return false;
+  const opex = opexOf(nowDate.getFullYear(), m);
+  return Math.abs(nowDate - opex) <= 3 * 24 * 60 * 60 * 1000;
+}
+
+function isHolidayWeek(nowDate = new Date()) {
+  const holidays = [
+    "2026-01-19","2026-02-16","2026-04-03","2026-05-25","2026-06-19",
+    "2026-07-03","2026-09-07","2026-11-26","2026-12-25",
+    "2027-01-18","2027-02-15","2027-03-26","2027-05-31","2027-06-18",
+    "2027-07-05","2027-09-06","2027-11-25","2027-12-24",
+  ].map(d => new Date(d + "T12:00:00-05:00"));
+  // Get Mon-Fri of current ET week
+  const etNow = new Date(nowDate.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const day = etNow.getDay();
+  const mon = new Date(etNow); mon.setDate(etNow.getDate() - (day === 0 ? 6 : day - 1));
+  const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+  return holidays.some(h => h >= mon && h <= fri);
+}
+
 /* Seasonality overlay (probability overlay ONLY — never a standalone signal) */
 function seasonalityLine(nowDate = new Date()) {
   const m = nowDate.getMonth(); // 0=Jan
@@ -2200,7 +2224,9 @@ const SESSION_GUIDE = {
    you can confirm desktop and mobile are rendering the SAME artifact
    version (there's no separate "deployment" — both devices must have this
    exact code open for storage sync / auto-tape / etc. to match). */
-/* v2026-06-22a (three improvements — all additive):
+/* v2026-06-23a — EFX (Expiration Flow Matrix): gradeEFX() post-processor, EFX-B/EFX-T model classification, expiration calendar helpers, LLM prompt injection, board UI badge, Discord Scans card update.
+
+   v2026-06-22a (three improvements — all additive):
    1. SHARED DESK (Supabase Model B — admin-publish, consumers read-only):
       - Supabase anon client reads shared_desk table on mount + subscribes to
         Realtime channel so every consumer browser receives updates instantly
@@ -2246,7 +2272,7 @@ const SESSION_GUIDE = {
      timestamp, tier counts (M/S/E/X), pin toggle, Restore, per-version delete
      (confirm). No bulk clear (consistent with the no-Clear data-loss policy).
    - Cross-device sync of the ring is deferred to V2 (per house decision). */
-const BUILD_VERSION = "v2026-06-22a";
+const BUILD_VERSION = "v2026-06-23a";
 
 /* ── Safe storage wrapper ────────────────────────────────────────────────────
    window.storage is a claude.ai artifact-only API. On any real deployed
@@ -2673,6 +2699,63 @@ function sectorFitOf(stock, favored) {
   return null;
 }
 
+/* ── EFX (Expiration Flow Matrix) — post-processor for options rows ──────────
+   HOUSE RULES: never touches gradeRow() internals; never modifies equity
+   verdicts; does not use STRSI or Momo; D=Stand Aside on expiration ONLY. */
+function gradeEFX(graded, volWeek) {
+  if (!graded.isOptions) return { score: null, cls: null, model: null, dteBucket: null, rationale: "equity — EFX N/A" };
+
+  // A. Bid/Ask Health — 20 pts
+  const lwcVal = graded.lwc?.val ?? 0;
+  const A = lwcVal === 3 ? 20 : lwcVal === 2 ? 10 : 0;
+
+  // B. OI State — 15 pts
+  const oiLabel = graded.oistate?.label ?? "";
+  const B = oiLabel === "new" ? 15 : oiLabel === "loading" ? 12 : oiLabel === "exits" ? 0 : 7;
+
+  // C. OI/V Commitment — 15 pts
+  const oiv = graded.oiv;
+  const C = !Number.isFinite(oiv) ? 0 : oiv >= 2.0 ? 15 : oiv >= 1.0 ? 10 : oiv >= 0.5 ? 5 : 0;
+
+  // D. IV Environment — 20 pts
+  const ivp = graded.ivp;
+  const D = !Number.isFinite(ivp) ? 8 : ivp <= 20 ? 20 : ivp <= 35 ? 15 : ivp <= 50 ? 10 : ivp <= 70 ? 5 : 0;
+
+  // E. Vol Cycle Week — 15 pts
+  const E = volWeek === 3 ? 15 : volWeek === 2 ? 12 : volWeek === 1 ? 8 : 3;
+
+  // F. PI+ Participation — 15 pts
+  const pi = graded.pi;
+  const F = !Number.isFinite(pi) ? 7 : pi >= 1.5 ? 15 : pi >= 0.75 ? 10 : pi >= 0 ? 5 : 0;
+
+  const score = A + B + C + D + E + F;
+
+  const cls = score >= 90 ? "A+" : score >= 75 ? "B" : score >= 50 ? "C" : "D";
+  const label = score >= 90 ? "Institutional Friendly" : score >= 75 ? "Retail Accessible" : score >= 50 ? "Dealer Controlled" : "Illiquid / Stand Aside";
+
+  let model, dteBucket;
+  if (score < 50) {
+    model = "EFX-∅"; dteBucket = "Stand Aside";
+  } else {
+    const conLbl = graded.con?.label ?? "";
+    const isBreakout = (conLbl.includes("ignition") || conLbl.includes("early"))
+      && (volWeek === 2 || volWeek === 3)
+      && Number.isFinite(ivp) && ivp <= 35;
+    model = isBreakout ? "EFX-B" : "EFX-T";
+    dteBucket = isBreakout ? "0-14 DTE (weekly)" : "21-45 DTE (monthly)";
+  }
+
+  // Rationale (max 80 chars)
+  const parts = [];
+  if (D >= 15) parts.push(`IV cheap (${ivp}p)`);
+  else if (D === 0) parts.push(`IV rich (${ivp}p)`);
+  if (B >= 12) parts.push(`OI ${oiLabel}`);
+  parts.push(`W${volWeek}`);
+  const rationale = (parts.join(", ") + ` → ${model}`).slice(0, 80);
+
+  return { score, cls, label, model, dteBucket, rationale };
+}
+
 /* grade a whole dataset (computes the session relative-strength fallback percentile) */
 function gradeDataset(rows) {
   const metrics = rows
@@ -2683,7 +2766,11 @@ function gradeDataset(rows) {
     let below = 0; for (const m of metrics) if (m < x) below++;
     return (below / metrics.length) * 100;
   };
-  return rows.map((r) => gradeRow(r, { rsRank, extHours: isExtendedHoursET() })).filter((g) => g.symbol && g.symbol !== "—");
+  return rows.map((r) => {
+    const graded = gradeRow(r, { rsRank, extHours: isExtendedHoursET() });
+    const efx = gradeEFX(graded, volWeekInfo().week);
+    return { ...graded, efx };
+  }).filter((g) => g.symbol && g.symbol !== "—");
 }
 
 /* ============================================================
@@ -3403,7 +3490,7 @@ export default function SigmaBondCoPilot() {
       const scanLine = (r) => {
         const base = tradeLine(r, null);
         const contractLine = r.isOptions
-          ? `\n    📄 Contract ${r.symbol} · Strike ${r.strike || "—"} · Exp ${r.expiry || "—"}`
+          ? `\n    📄 Contract ${r.symbol} · Strike ${r.strike || "—"} · Exp ${r.expiry || "—"}${r.efx?.score != null ? ` EFX:${r.efx.score}(${r.efx.cls}) ${r.efx.model} ${r.efx.dteBucket} | ${r.efx.rationale}` : ""}`
           : "";
         return base + contractLine;
       };
@@ -4142,9 +4229,24 @@ export default function SigmaBondCoPilot() {
 
     /* mechanical overlays — computed, never guessed */
     const vw = volWeekInfo(new Date());
+    const efxEnv = (() => {
+      const qOPEX = isQuarterlyOPEX() ? " ⚠ QUARTERLY OPEX PROXIMITY — elevated dealer repositioning" : "";
+      const hWk = isHolidayWeek() ? " ⚠ HOLIDAY WEEK — reduce confidence on low-volume breakouts" : "";
+      const topEFX = [...(gScansLive ?? []), ...(gStocksLive ?? [])]
+        .filter(g => g.isOptions && g.efx?.score >= 75)
+        .sort((a, b) => b.efx.score - a.efx.score)
+        .slice(0, 5)
+        .map(g => `${g.symbol} EFX:${g.efx.score}(${g.efx.cls}) ${g.efx.model} ${g.efx.dteBucket}`)
+        .join(" | ");
+      return [
+        `EXPIRATION ENVIRONMENT: ${vw.label}${qOPEX}${hWk}`,
+        topEFX ? `TOP EFX OPPORTUNITIES: ${topEFX}` : "TOP EFX: none qualified ≥75",
+      ].join("\n");
+    })();
     const overlays = `OVERLAYS (probability overlays ONLY — never standalone directional signals):
 - Volatility Cycle: ${vw.label} (next OPEX ${vw.opex})
-- Seasonality: ${seasonalityLine(new Date())}`;
+- Seasonality: ${seasonalityLine(new Date())}
+${efxEnv}`;
 
     /* the locked Field Report output template */
     const playbookName = { am: "OPENING BELL", lunch: "MIDDAY DRIVE", pm: "CLOSING DRIVE" }[session];
@@ -4506,6 +4608,7 @@ Rules:
 - If no A+ edge exists: Trade Card says "Execution: NO TRADE" and One Sentence Read explains why.
 - If chart data is blurry or key levels are unreadable: say so in the Trade Card. Do not invent price levels.
 - Overlay context (probability only): Volatility Cycle = ${vw.label} (next OPEX ${vw.opex}); Seasonality = ${seasonalityLine(new Date())}.
+- EFX LAYER: Before recommending an expiration, state the EFX classification (Institutional Friendly / Retail Accessible / Dealer Controlled / Illiquid). State whether EFX-B (breakout/weekly) or EFX-T (trend/monthly) applies. State the recommended DTE bucket. If EFX score < 50, issue Stand Aside on the expiration selection regardless of directional verdict.
 
 ${CLASSICAL_PATTERNS_REFERENCE}`;
 
@@ -5662,7 +5765,25 @@ function BoardRow({ g, rank, active, onClick, mobile, delta }) {
             <span style={{ fontSize: 9, color: COL.faint, fontFamily: mono, letterSpacing: ".04em" }}>CTX</span>
           )}
         </span>
-        <span style={{ ...S.colSigma, color: COL.faint, fontSize: 9 }}>opt</span>
+        <span style={{ ...S.colSigma, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          {g.efx?.score != null ? (
+            <span
+              title={`${g.efx.rationale} | ${g.efx.dteBucket}`}
+              style={{
+                display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 1,
+                cursor: "default",
+              }}
+            >
+              <span style={{
+                background: g.efx.cls === "A+" ? "#22c55e" : g.efx.cls === "B" ? "#06b6d4" : g.efx.cls === "C" ? "#f59e0b" : "#ef4444",
+                color: "#fff", borderRadius: 6, padding: "1px 6px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+              }}>EFX {g.efx.score}</span>
+              <span style={{ fontSize: 9, color: COL.faint }}>{g.efx.model}</span>
+            </span>
+          ) : (
+            <span style={{ color: COL.faint, fontSize: 11 }}>—</span>
+          )}
+        </span>
       </div>
     );
   }
